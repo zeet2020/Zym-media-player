@@ -577,7 +577,7 @@ impl Player {
             last_move: Instant::now(),
             seek_hover: None,
             dragging: false,
-            panel: if files.len() > 1 { Panel::Playlist } else { Panel::None },
+            panel: if files.len() != 1 { Panel::Playlist } else { Panel::None },
             menu: None,
             about: false,
             pop: None,
@@ -590,9 +590,6 @@ impl Player {
             add_popup: false,
             stopped_at: None,
         };
-        if files.is_empty() {
-            player.toggle_explorer(cx); // no files: start on the Explorer (home screen)
-        }
         if std::env::var_os("ZYM_DEBUG").is_some() {
             spawn_watchdog();
         }
