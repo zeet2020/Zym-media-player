@@ -1,0 +1,26 @@
+{
+  "id": "org.zym.m3u",
+  "name": "IPTV (M3U)",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Live TV channels from any M3U/M3U8 playlist URL. Groups become folders.",
+  "author": "Zym Player",
+  "icon": "icon.png",
+  "capabilities": [
+    "browse",
+    "search"
+  ],
+  "hosts": [
+    "*"
+  ],
+  "settings": [
+    {
+      "key": "playlist_url",
+      "label": "Playlist URL",
+      "type": "string",
+      "required": true,
+      "section": "Playlist",
+      "description": "http(s) link to an .m3u / .m3u8 file from your IPTV provider"
+    }
+  ]
+}

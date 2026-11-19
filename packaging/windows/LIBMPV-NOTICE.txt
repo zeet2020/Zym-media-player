@@ -1,0 +1,23 @@
+libmpv-2.dll — third-party component
+====================================
+
+This folder contains libmpv-2.dll, the mpv media player library, which Zym Player
+uses for playback. It is a separate program, distributed here unmodified.
+
+Build used:  shinchiro/mpv-winbuild-cmake, release 20261111
+             (mpv-dev-x86_64-20261111-git-bcde6b93cc.7z)
+             https://github.com/shinchiro/mpv-winbuild-cmake
+mpv source:  https://github.com/mpv-player/mpv  (commit bcde6b93cc)
+             This build includes FFmpeg (https://ffmpeg.org) and other libraries
+             statically linked by the build recipe above.
+
+License: this libmpv build is configured with GPL-licensed components, so the
+combined library is distributed under the GNU General Public License, version 3
+or later — the same license as Zym Player (see LICENSE.txt in this folder).
+mpv's own copyright notices: https://github.com/mpv-player/mpv/blob/master/Copyright
+FFmpeg's license terms:      https://ffmpeg.org/legal.html
+
+Corresponding source: the mpv, FFmpeg and dependency sources for this build are
+the upstream repositories at the versions selected by the build recipe above.
+To obtain them, contact the Zym Player maintainers via
+https://github.com/zeet2020/Zym-media-player/issues

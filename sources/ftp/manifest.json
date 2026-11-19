@@ -1,0 +1,17 @@
+{
+  "id": "org.zym.ftp",
+  "name": "FTP / SFTP",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Browse and play media from an FTP or SFTP server (NAS, seedbox, home server).",
+  "author": "Zym Player",
+  "capabilities": ["browse"],
+  "hosts": ["*"],
+  "settings": [
+    { "key": "url", "label": "Server URL", "type": "string", "required": true, "section": "Server",
+      "description": "sftp://host[:port]/folder or ftp://host[:port]/folder" },
+    { "key": "username", "label": "Username", "type": "string", "section": "Login",
+      "description": "Required for SFTP. Leave empty for anonymous FTP." },
+    { "key": "password", "label": "Password", "type": "secret", "section": "Login" }
+  ]
+}

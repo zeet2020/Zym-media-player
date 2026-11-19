@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zym-player.local/schema/source-v1.schema.json",
+  "title": "Zym Player Source Plugin API v1",
+  "description": "Validate a document against one of: #/$defs/Manifest, #/$defs/Page, #/$defs/Playback, #/$defs/GalleryIndex. Forward compatible: unknown properties and unknown kind/layout values are allowed (see docs/plugins.md \u00a76). The player validates Page items individually and drops invalid ones.",
+  "$defs": {
+    "Manifest": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "version",
+        "api",
+        "capabilities",
+        "hosts"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+([-+].*)?$"
+        },
+        "api": {
+          "const": 1
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "author": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "contains": {
+            "const": "browse"
+          },
+          "uniqueItems": true
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Setting"
+          }
+        }
+      }
+    },
+    "Setting": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "type"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "secret",
+            "bool",
+            "select"
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "default": {
+          "type": [
+            "string",
+            "boolean"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "section": {
+          "type": "string",
+          "description": "Group heading in the settings form. Sections appear in order of first use; settings without one go in a leading untitled group."
+        },
+        "description": {
+          "type": "string",
+          "description": "Help text shown under the field."
+        }
+      },
+      "if": {
+        "properties": {
+          "type": {
+            "const": "select"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "options"
+        ]
+      }
+    },
+    "Page": {
+      "type": "object",
+      "required": [
+        "sections"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "layout": {
+          "type": "string",
+          "description": "Known: grid, list, rows, channels. Unknown values fall back to list."
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Section"
+          }
+        },
+        "next": {
+          "type": "string"
+        }
+      }
+    },
+    "Section": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        }
+      }
+    },
+    "Item": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Known: folder, movie, series, season, episode, live, stream. Unknown values render as folder (has route) or stream (playable)."
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "art": {
+          "type": "object",
+          "properties": {
+            "poster": {
+              "$ref": "#/$defs/ImageUrl"
+            },
+            "thumb": {
+              "$ref": "#/$defs/ImageUrl"
+            },
+            "backdrop": {
+              "$ref": "#/$defs/ImageUrl"
+            },
+            "logo": {
+              "$ref": "#/$defs/ImageUrl"
+            }
+          }
+        },
+        "badges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 6
+        },
+        "route": {
+          "type": "string",
+          "minLength": 1
+        },
+        "playable": {
+          "type": "boolean"
+        },
+        "live": {
+          "type": "object",
+          "properties": {
+            "now": {
+              "$ref": "#/$defs/Programme"
+            },
+            "next": {
+              "$ref": "#/$defs/Programme"
+            }
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "route"
+          ]
+        },
+        {
+          "required": [
+            "playable"
+          ],
+          "properties": {
+            "playable": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "Programme": {
+      "type": "object",
+      "required": [
+        "title"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "ImageUrl": {
+      "type": "string",
+      "pattern": "^(https?://|data:image/)"
+    },
+    "Playback": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^(https?|rtmps?|rtsp|rtp|udp|srt|mms|s?ftp)://"
+        },
+        "title": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[^\\r\\n]*$"
+          }
+        },
+        "subtitles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "pattern": "^https?://"
+              },
+              "lang": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "start": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "GalleryIndex": {
+      "type": "object",
+      "required": [
+        "name",
+        "plugins"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "version",
+              "api",
+              "hosts",
+              "download",
+              "sha256"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "api": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "icon": {
+                "type": "string"
+              },
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "download": {
+                "type": "string",
+                "pattern": "^https://"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

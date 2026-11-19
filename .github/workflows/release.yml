@@ -1,0 +1,182 @@
+name: Release
+
+# Push a tag `vX.Y.Z` (matching Cargo.toml version) -> build everything and publish a GitHub Release.
+# Run manually (workflow_dispatch) -> same builds, uploaded as workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_STRIP: symbols
+  RUST_TOOLCHAIN: "1.93"
+  # Windows libmpv (shinchiro/mpv-winbuild-cmake). Bump URL + SHA256 together.
+  MPV_DEV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
+  MPV_DEV_SHA256: 273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libmpv-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Version
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $v"; exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          mkdir dist
+
+      - name: Build source plugins (.zym)
+        run: |
+          for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
+            cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$dir/Cargo.toml"
+            crate=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1 | tr - _)
+            id=$(jq -r .id "$dir/manifest.json")
+            stage=$(mktemp -d)
+            cp "$dir/manifest.json" "$stage/"
+            cp "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$stage/plugin.wasm"
+            (cd "$stage" && zip -X "$GITHUB_WORKSPACE/dist/$id.zym" manifest.json plugin.wasm)
+          done
+
+      # License gate: fails on any dependency license outside about.toml's GPL-3-compatible list,
+      # and on a stale committed THIRD-PARTY-LICENSES.md (run packaging/gen-licenses.sh and commit).
+      - name: Third-party licenses
+        run: |
+          cargo install cargo-about@0.9.3 --locked --features cli
+          ./packaging/gen-licenses.sh
+          git diff --exit-code THIRD-PARTY-LICENSES.md
+
+      # Plugins are built above, so the plugin end-to-end tests run instead of skipping.
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package .deb / .rpm / .tar.gz
+        run: |
+          cargo install cargo-deb@3.8.0 cargo-generate-rpm@0.21.1 --locked
+          cargo deb --no-build --output dist/
+          cargo generate-rpm --output dist/
+          t=zym-player-$VERSION-linux-x86_64
+          mkdir "$t"
+          cp target/release/zym-player LICENSE THIRD-PARTY-LICENSES.md "$t/"
+          cp packaging/README-linux.txt "$t/README.txt"
+          # Bundled plugins: the player reads <exe dir>/sources/<id>/
+          for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
+            crate=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1 | tr - _)
+            id=$(jq -r .id "$dir/manifest.json")
+            mkdir -p "$t/sources/$id"
+            cp "$dir/manifest.json" "$t/sources/$id/"
+            cp "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$t/sources/$id/plugin.wasm"
+          done
+          tar czf "dist/$t.tar.gz" "$t"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Build source plugins
+        run: |
+          foreach ($d in "sources/m3u", "sources/webdav", "sources/ftp", "sources/stremio") {
+            cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$d/Cargo.toml"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Fetch libmpv
+        run: |
+          $mpv = "$env:RUNNER_TEMP\mpv"
+          Invoke-WebRequest $env:MPV_DEV_URL -OutFile "$env:RUNNER_TEMP\mpv-dev.7z"
+          $hash = (Get-FileHash "$env:RUNNER_TEMP\mpv-dev.7z" -Algorithm SHA256).Hash
+          if ($hash -ne $env:MPV_DEV_SHA256) { throw "libmpv SHA256 mismatch: $hash" }
+          7z x -y "-o$mpv" "$env:RUNNER_TEMP\mpv-dev.7z"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # libmpv2-sys emits `rustc-link-lib=mpv`; MSVC link.exe looks for mpv.lib and
+          # accepts the MinGW import library under that name.
+          Copy-Item "$mpv\libmpv.dll.a" "$mpv\mpv.lib"
+          "MPV_DIR=$mpv" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: |
+          $env:RUSTFLAGS = "-L native=$env:MPV_DIR"
+          cargo build --release --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Package .zip / installer
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $stage = "zym-player-$v-windows-x64"
+          New-Item -ItemType Directory $stage, dist | Out-Null
+          Copy-Item target\release\zym-player.exe, "$env:MPV_DIR\libmpv-2.dll", THIRD-PARTY-LICENSES.md, packaging\windows\LIBMPV-NOTICE.txt $stage
+          Copy-Item LICENSE "$stage\LICENSE.txt"
+          # Bundled plugins: the player reads <exe dir>\sources\<id>\
+          foreach ($d in "sources/m3u", "sources/webdav", "sources/ftp", "sources/stremio") {
+            $crate = ((Select-String -Path "$d/Cargo.toml" -Pattern '^name = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value) -replace '-', '_'
+            $id = (Get-Content "$d/manifest.json" -Raw | ConvertFrom-Json).id
+            New-Item -ItemType Directory "$stage\sources\$id" -Force | Out-Null
+            Copy-Item "$d/manifest.json" "$stage\sources\$id\"
+            Copy-Item "$d/target/wasm32-unknown-unknown/release/$crate.wasm" "$stage\sources\$id\plugin.wasm"
+          }
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\$stage.zip"
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source ?? (Resolve-Path "C:\Program Files*\Inno Setup*\ISCC.exe" | Select-Object -First 1).Path
+          & $iscc "/DAppVersion=$v" "/DSrcDir=$PWD\$stage" "/DOutDir=$PWD\dist" packaging\zym-player.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

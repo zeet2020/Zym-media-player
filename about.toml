@@ -1,0 +1,28 @@
+# cargo-about: generate THIRD-PARTY-LICENSES.md and act as a license gate.
+# Only licenses compatible with distributing Zym Player under GPL-3.0-or-later are accepted;
+# for "A OR B" crates cargo-about picks the first accepted option (e.g. BSD over GPL-2.0-only).
+# Generation FAILS if any dependency's license is not in this list.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
+    "NCSA",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "LGPL-2.1",
+    "LGPL-2.1-or-later",
+    "GPL-3.0-or-later",
+]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true

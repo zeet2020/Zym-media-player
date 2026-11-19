@@ -1,0 +1,18 @@
+{
+  "id": "org.zym.webdav",
+  "name": "WebDAV",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Browse and play media from a WebDAV server (Nextcloud, ownCloud, Apache, NAS, rclone serve webdav, …).",
+  "author": "Zym Player",
+  "capabilities": ["browse"],
+  "hosts": ["*"],
+  "settings": [
+    { "key": "url", "label": "Server URL", "type": "string", "required": true, "section": "Server",
+      "description": "Folder to start in, e.g. https://cloud.example.com/remote.php/dav/files/USER/" },
+    { "key": "username", "label": "Username", "type": "string", "section": "Login",
+      "description": "Leave empty for servers without login" },
+    { "key": "password", "label": "Password", "type": "secret", "section": "Login",
+      "description": "Use an app password where your server offers one" }
+  ]
+}

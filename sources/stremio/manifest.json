@@ -1,0 +1,15 @@
+{
+  "id": "org.zym.stremio",
+  "name": "Stremio addons",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Browse catalogs and play streams from Stremio addons (Cinemeta, your debrid-enabled stream addons, …).",
+  "author": "Zym Player",
+  "capabilities": ["browse", "search"],
+  "hosts": ["*"],
+  "settings": [
+    { "key": "addons", "label": "Addons", "type": "string", "required": true,
+      "default": "https://v3-cinemeta.strem.io/manifest.json",
+      "description": "Addon manifest URLs, comma-separated. Catalogs come from catalog addons, streams from stream addons." }
+  ]
+}

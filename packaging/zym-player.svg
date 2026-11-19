@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#7a3cff"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#bg)"/>
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#shine)"/>
+  <!-- "Z" whose bottom stroke ends in a play arrowhead (shifted to optical center) -->
+  <g transform="translate(-8 -13)">
+  <path d="M72 76 H180 L80 176 H150" fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M146 146 L200 176 L146 206 Z" fill="#ffffff" stroke="#ffffff" stroke-width="10" stroke-linejoin="round"/>
+  </g>
+</svg>

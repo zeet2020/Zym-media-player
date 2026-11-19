@@ -1,0 +1,21 @@
+[package]
+name = "zym-source-stremio"
+version = "0.1.0"
+edition = "2024"
+description = "Zym Player source plugin: browse and play via Stremio addons"
+license = "GPL-3.0-or-later"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+extism-pdk = "1.4"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+# Standalone: not part of the player's build.
+[workspace]

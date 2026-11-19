@@ -1,0 +1,5 @@
+# Build output (player and every plugin crate)
+target/
+# Editor swap/backup files
+*.swp
+*~
