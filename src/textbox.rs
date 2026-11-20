@@ -24,6 +24,10 @@ pub enum Field {
     PlRename,
     PlNewName,
     PlAddUrl,
+    /// Settings › mpv: yt-dlp program path.
+    YtdlPath,
+    /// Settings › mpv: a text option (mpv option name).
+    MpvOpt(&'static str),
 }
 
 impl Player {
@@ -33,6 +37,7 @@ impl Player {
             Field::AddUrl => Some(&mut self.add_url),
             Field::Search | Field::Setting(_) | Field::ConnName => self.explorer.field_text(f),
             Field::PlSaveAs | Field::PlRename | Field::PlNewName | Field::PlAddUrl => self.pl.field_text(f),
+            Field::YtdlPath | Field::MpvOpt(_) => self.settings.as_mut()?.field_text(f),
         }
     }
 
@@ -50,6 +55,8 @@ impl Player {
             }
             Field::Search | Field::Setting(_) | Field::ConnName => self.submit_explorer_field(&f, cx),
             Field::PlSaveAs | Field::PlRename | Field::PlNewName | Field::PlAddUrl => self.submit_playlist_field(&f),
+            Field::YtdlPath => self.save_ytdl_path(cx),
+            Field::MpvOpt(key) => self.save_mpv_text(key),
         }
     }
 }

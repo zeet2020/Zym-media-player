@@ -133,7 +133,7 @@ pub fn tofu_check(store: &std::path::Path, host_port: &str, fingerprint: &str) -
             }
             let line = format!("{host_port} {fingerprint}\n");
             std::fs::write(store, text + &line).map_err(|e| format!("can't save host key: {e}"))?;
-            eprintln!("sftp: trusted new host key {host_port} {fingerprint}");
+            crate::log::info("sftp", &format!("trusted new host key {host_port} {fingerprint}"));
             Ok(())
         }
     }

@@ -66,7 +66,7 @@ impl Player {
                     Ok((tag, url)) if is_newer(&tag, VERSION) => Update::Available { version: tag.trim_start_matches('v').to_string(), url },
                     Ok(_) => Update::UpToDate,
                     Err(e) => {
-                        eprintln!("update check: {e}");
+                        crate::log::warn("update", &format!("check failed: {e}"));
                         Update::Failed(e)
                     }
                 };

@@ -6,7 +6,9 @@
 
 mod explorer;
 mod infocard;
+mod log;
 mod menu;
+mod mpvopts;
 mod panel;
 mod playlists;
 mod remote;
@@ -103,7 +105,7 @@ fn spawn_watchdog() {
             let hb = HEARTBEAT.load(Ordering::Relaxed);
             if hb == last && hb > 0 {
                 let wchan = std::fs::read_to_string(format!("/proc/self/task/{pid}/wchan")).unwrap_or_default();
-                eprintln!("WATCHDOG: UI tick stalled; in-flight mpv call: {:?}; main wchan: {wchan}", IN_FLIGHT.lock().unwrap());
+                log::error("watchdog", &format!("UI tick stalled; in-flight mpv call: {:?}; main wchan: {wchan}", IN_FLIGHT.lock().unwrap()));
             }
             last = hb;
         }
@@ -147,16 +149,31 @@ impl Mpv {
             let h = mpv_create();
             assert!(!h.is_null(), "mpv_create failed");
             let mpv = Arc::new(Mpv(h, Mutex::default()));
+            let prefs = settings::player_prefs();
             mpv.opt("vo", "libmpv");
             // Decode on GPU, copy back for the sw renderer (Settings › Player can turn it off).
-            mpv.opt("hwdec", settings::hwdec_value(settings::player_prefs().hwdec));
+            mpv.opt("hwdec", settings::hwdec_value(prefs.hwdec));
+            if prefs.mpv_conf {
+                // Settings › mpv: read the user's mpv.conf (+ input.conf, scripts/) at initialize.
+                mpv.opt("config-dir", &settings::mpv_config_dir().to_string_lossy());
+                mpv.opt("config", "yes");
+            }
             mpv.opt("keep-open", "yes"); // advance through playlist, hold last frame at the end
             mpv.opt("idle", "yes"); // stay alive with an empty playlist (drop files later)
             mpv.opt("screenshot-dir", "~/Pictures"); // mpv expands ~ on every OS
             // The sw renderer can't rotate: mpv still hands it rotated crop rects and aborts
             // (mp_image_crop assertion). Rotation is done by a video filter instead, see set_rotation.
             mpv.opt("video-rotate", "no");
+            // "Resume where you left off" (Settings › mpv): positions saved next to the player's settings.
+            mpv.opt("watch-later-dir", &config_dir().join("watch_later").to_string_lossy());
             assert!(mpv_initialize(h) >= 0, "mpv_initialize failed");
+            // After mpv.conf (if any): what Settings shows is what's in effect.
+            settings::apply_prefs(&mpv, &prefs);
+            if prefs.mpv_conf {
+                // mpv.conf loaded during initialize and may have overridden these; the player needs them.
+                mpv.set_str("vo", "libmpv");
+                mpv.set_str("video-rotate", "no");
+            }
             mpv
         }
     }
@@ -168,7 +185,7 @@ impl Mpv {
             if p.file_name().is_some_and(|n| off.iter().any(|o| *o == *n.to_string_lossy())) {
                 continue;
             }
-            eprintln!("plugin: {}", p.display());
+            log::info("scripts", &format!("loading {}", p.display()));
             self.cmd(&["load-script", &p.to_string_lossy()]);
         }
     }
@@ -238,9 +255,15 @@ impl Mpv {
         cache.1.clone()
     }
 
+    /// mpv messages sent to the app log: warnings and up, or everything verbose (Settings › Logs).
+    pub fn set_log_level(&self, verbose: bool) {
+        let level = if verbose { c"v" } else { c"warn" };
+        unsafe { mpv_request_log_messages(self.0, level.as_ptr()) };
+    }
+
     pub fn cmd(&self, args: &[&str]) {
         if std::env::var_os("ZYM_DEBUG").is_some() {
-            eprintln!("cmd {}", redact(&format!("{args:?}")));
+            log::debug("cmd", &redact(&format!("{args:?}")));
         }
         let owned: Vec<CString> = args.iter().map(|a| CString::new(*a).unwrap()).collect();
         let mut ptrs: Vec<*const i8> = owned.iter().map(|a| a.as_ptr()).collect();
@@ -322,7 +345,7 @@ impl Mpv {
                 "user-agent" => opts.push(("user-agent", v.clone())),
                 "referer" | "referrer" => opts.push(("referrer", v.clone())),
                 // ponytail: string-list option value splits on ','; such headers are skipped here (play_stream sets them exactly).
-                _ if v.contains(',') => eprintln!("append: skipped header {k} (contains ',')"),
+                _ if v.contains(',') => log::warn("append", &format!("skipped header {k} (contains ',')")),
                 _ => extra.push(format!("{k}: {v}")),
             }
         }
@@ -346,7 +369,7 @@ impl Mpv {
         let mut list = mpv_node_list { num: args.len() as i32, values: args.as_mut_ptr(), keys: std::ptr::null_mut() };
         let mut root = mpv_node { u: mpv_node__bindgen_ty_1 { list: &mut list }, format: mpv_format_MPV_FORMAT_NODE_ARRAY };
         if std::env::var_os("ZYM_DEBUG").is_some() {
-            eprintln!("cmd [\"loadfile\", {}, \"append-play\", -1, {opts:?}]", redact(&pb.url));
+            log::debug("cmd", &format!("[\"loadfile\", {}, \"append-play\", -1, {opts:?}]", redact(&pb.url)));
         }
         unsafe { mpv_command_node_async(self.0, 0, &mut root) }; // mpv copies args before returning
     }
@@ -432,7 +455,7 @@ type Latest = Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>;
 type VideoSize = Arc<AtomicU64>;
 
 /// Drains mpv's event queue (a full queue makes async commands fail silently), tracks video size,
-/// and prints mpv warnings/errors to stderr.
+/// and passes mpv's log messages to the app log (log.rs).
 #[allow(non_upper_case_globals)] // bindgen constants used as match patterns
 fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake) {
     unsafe {
@@ -454,7 +477,7 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
                 mpv_event_id_MPV_EVENT_LOG_MESSAGE => {
                     let m = &*(ev.data as *const mpv_event_log_message);
                     let s = |p: *const i8| std::ffi::CStr::from_ptr(p).to_string_lossy();
-                    eprint!("mpv [{}] {}: {}", s(m.prefix), s(m.level), s(m.text));
+                    log::add(log::Level::from_mpv(&s(m.level)), &format!("mpv/{}", s(m.prefix)), &s(m.text));
                 }
                 mpv_event_id_MPV_EVENT_FILE_LOADED => {
                     let after = std::mem::take(&mut *mpv.1.lock().unwrap());
@@ -472,7 +495,7 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
                 mpv_event_id_MPV_EVENT_END_FILE => {
                     let e = &*(ev.data as *const mpv_event_end_file);
                     if e.reason == mpv_end_file_reason_MPV_END_FILE_REASON_ERROR {
-                        eprintln!("mpv: file failed: {}", mpv_error_str(e.error));
+                        log::error("mpv", &format!("file failed: {}", mpv_error_str(e.error)));
                     }
                 }
                 mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
@@ -556,7 +579,7 @@ fn spawn_render_thread(mpv: Arc<Mpv>, latest: Latest, size: VideoSize, wake_me: 
             let r = mpv_render_context_render(rctx, params.as_mut_ptr());
             pending = false; // mpv consumed (or rejected) the frame either way
             if r < 0 {
-                eprintln!("render failed: {}", mpv_error_str(r));
+                log::error("render", &format!("render failed: {}", mpv_error_str(r)));
                 continue;
             }
             // "0" byte is garbage; force opaque alpha.
@@ -601,6 +624,10 @@ pub struct Player {
     /// Details cards from content plugins, by stream URL (= mpv playlist filename).
     pub infos: std::collections::HashMap<String, sources::Info>,
     pub info_open: bool,
+    /// Settings › mpv: couldn't create/open mpv.conf.
+    pub mpv_conf_error: Option<String>,
+    /// Settings › Logs: mpv sends everything (this session only).
+    pub mpv_verbose: bool,
     /// Result of the update check About runs (once per session unless it failed).
     pub update: update::Update,
     /// Per text box (by field): text start x, font and size from the last paint, for click-to-caret.
@@ -692,6 +719,11 @@ impl Player {
         }
 
         // ponytail: 60Hz poll; swap for a channel + cx.notify from the render thread if it matters.
+        cx.on_app_quit(|this, _| {
+            this.save_position();
+            async {}
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| loop {
             Timer::after(Duration::from_millis(16)).await;
             if let Err(e) = this.update_in(cx, |p, window, cx| p.tick(window, cx)) {
@@ -699,7 +731,7 @@ impl Player {
                 if this.upgrade().is_none() {
                     break;
                 }
-                eprintln!("tick: {e:#}");
+                log::error("tick", &format!("{e:#}"));
             }
         })
         .detach();
@@ -731,6 +763,8 @@ impl Player {
             panel_drag: false,
             infos: Default::default(),
             info_open: false,
+            mpv_conf_error: None,
+            mpv_verbose: std::env::var_os("ZYM_DEBUG").is_some(),
             update: Default::default(),
             text_geo: Default::default(),
             editing: None,
@@ -849,7 +883,7 @@ impl Player {
             return self.open_url_box();
         }
         if ks.modifiers.control && ks.key == "," {
-            return self.toggle_settings();
+            return self.toggle_settings(cx);
         }
         match ks.key.as_str() {
             "space" | "k" => return self.play_pause(),
@@ -905,7 +939,16 @@ impl Player {
     }
 
     /// Show the playlist with the "add URL" box focused.
+    /// "Resume where you left off": mpv only saves on its own quit command, which the player never
+    /// sends, so save explicitly on Stop and when the app quits.
+    pub fn save_position(&self) {
+        if self.mpv.get_string("save-position-on-quit").as_deref() == Some("yes") && !self.mpv.get_flag("idle-active") {
+            self.mpv.cmd(&["write-watch-later-config"]);
+        }
+    }
+
     fn stop(&mut self) {
+        self.save_position();
         self.stopped_at = self.mpv.get_i64("playlist-pos").filter(|p| *p >= 0);
         self.mpv.reset_stream_opts(); // drop plugin-forced title/headers too
         self.mpv.cmd(&["stop"]); // full stop: ends playback and clears the playlist
@@ -1351,7 +1394,7 @@ impl Player {
             ]),
             Item::Sep,
             ui("Quick Settings", |p, _, _| p.toggle_pop()).hint("S").checked(self.pop.is_some()),
-            ui("Settings", |p, _, _| p.open_settings(settings::Tab::Appearance)).hint("Ctrl+,"),
+            ui("Settings", |p, _, cx| p.open_settings(settings::Tab::Appearance, cx)).hint("Ctrl+,"),
             Item::Sep,
             ui(format!("About {APP_NAME}"), |p, _, cx| {
                 p.close_overlays();
@@ -1926,6 +1969,7 @@ impl AssetSource for Assets {
 
 fn main() {
     let files: Vec<String> = std::env::args().skip(1).collect();
+    log::init();
     theme::load();
     match files.first().map(String::as_str) {
         Some("-V" | "--version") => return println!("{APP_NAME} {VERSION}"),

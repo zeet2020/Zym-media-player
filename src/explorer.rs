@@ -355,6 +355,40 @@ impl Player {
         }
     }
 
+    /// "+" on a row or card. A playable item is added as it is. A movie/episode leads to a page of
+    /// stream choices, so its first stream (the addon's top pick) is added, described by the movie.
+    fn add_item(&mut self, item: Item, cx: &mut Context<Self>) {
+        if item.playable {
+            return self.activate(item, true, cx);
+        }
+        let (Some(src), Some(route)) = (self.explorer.source(), item.route.clone()) else { return };
+        self.explorer.notice = Some((format!("Adding {}…", item.title), false));
+        let task = cx.background_executor().spawn(async move {
+            let page = src.browse(&route, None)?;
+            let stream = page.sections.into_iter().flat_map(|s| s.items).find(|i| i.playable).ok_or("no streams found")?;
+            let pb = src.resolve(&stream.id)?;
+            Ok::<_, String>((stream, pb))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |p, cx| {
+                p.explorer.notice = Some(match result {
+                    Ok((stream, pb)) => {
+                        let info = pb.info.clone().unwrap_or_else(|| sources::Info::from_item(&stream, Some(&item)));
+                        p.infos.insert(pb.url.clone(), info);
+                        p.mpv.append_stream(&pb);
+                        let pick = [Some(stream.title.clone()), stream.subtitle.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                        (format!("Added to playlist: {} ({pick})", item.title), false)
+                    }
+                    Err(e) => (format!("Couldn't add {}: {e}", item.title), true),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Debug (ZYM_DEBUG_AUTOPLAY): play an item of the selected source exactly as a click would.
     /// Comma-separated: "id" plays, "+id" appends, "@route" browses to a route.
     pub fn debug_play(&mut self, ids: String, cx: &mut Context<Self>) {
@@ -675,16 +709,18 @@ impl Player {
                 let items = sec.items.iter().enumerate().map(|(ii, it)| {
                     let id = SharedString::from(format!("it-{si}-{ii}"));
                     let item = it.clone();
-                    let add = (it.playable && !grid).then(|| {
+                    let add = addable(it).then(|| {
                         let item = it.clone();
-                        icon_button_small(SharedString::from(format!("add-{si}-{ii}")), "+")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation(); // don't also play the row
-                                this.activate(item.clone(), true, cx);
-                            }))
-                            .into_any_element()
+                        let btn = icon_button_small(SharedString::from(format!("add-{si}-{ii}")), "+");
+                        // On a poster: a round dark badge so it reads over any art (fixed bg -> fixed text).
+                        let btn = if grid { btn.rounded_full().bg(gpui::rgba(0x000000b0)).text_color(rgb(0xffffff)).hover(|s| s.bg(gpui::rgba(0x000000e0))) } else { btn };
+                        btn.on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation(); // don't also open/play the item
+                            this.add_item(item.clone(), cx);
+                        }))
+                        .into_any_element()
                     });
-                    let el = if grid { poster_card(id, it) } else { list_row(id, it, add) };
+                    let el = if grid { poster_card(id, it, add) } else { list_row(id, it, add) };
                     el.on_click(cx.listener(move |this, _, _, cx| this.activate(item.clone(), false, cx)))
                 });
                 div()
@@ -881,7 +917,7 @@ fn list_row(id: SharedString, it: &Item, add: Option<gpui::AnyElement>) -> State
 
 /// Fixed-size poster card (2:3 art + one title line + one subtitle line), so every card in a row
 /// lines up whatever the art's shape, load state or text length.
-fn poster_card(id: SharedString, it: &Item) -> Stateful<Div> {
+fn poster_card(id: SharedString, it: &Item, add: Option<gpui::AnyElement>) -> Stateful<Div> {
     const W: f32 = 142.;
     const H: f32 = 213.;
     let url = it.art.poster.clone().or_else(|| art_url(it));
@@ -892,18 +928,22 @@ fn poster_card(id: SharedString, it: &Item) -> Stateful<Div> {
         .w(px(W + 8.))
         .cursor_pointer()
         .rounded_md()
+        .group("card")
         .hover(|s| s.bg(t().hover()))
         .p_1()
         .child(
             // Frame holds the size while the image loads, if it fails, or if its aspect differs.
             div()
+                .relative()
                 .w(px(W))
                 .h(px(H))
                 .flex_none()
                 .rounded_md()
                 .overflow_hidden()
                 .bg(t().field())
-                .children(url.map(|u| img(u).size_full().object_fit(gpui::ObjectFit::Cover))),
+                .children(url.map(|u| img(u).size_full().object_fit(gpui::ObjectFit::Cover)))
+                // "+ add to playlist", on hover, top-right of the poster.
+                .children(add.map(|a| div().absolute().top_1().right_1().invisible().group_hover("card", |s| s.visible()).child(a))),
         )
         .child(line(it.title.clone()).mt_1().text_sm())
         .child(line(it.subtitle.clone().unwrap_or_default()).text_xs().text_color(t().muted()))
@@ -924,5 +964,27 @@ mod tests {
         let shape: Vec<(Option<&str>, Vec<&str>)> = g.iter().map(|(t, v)| (t.as_deref(), v.iter().map(|x| x.key.as_str()).collect())).collect();
         assert_eq!(shape, vec![(None, vec!["a", "e"]), (Some("Account"), vec!["b", "d"]), (Some("Playback"), vec!["c"])]);
         assert!(group_by_section(&[setting("x", Some("Only"))])[0].0.is_some()); // no empty leading group
+    }
+}
+
+/// Gets a "+": playable items, and movies/episodes whose page lists stream choices (first one is added).
+/// Series and folders hold many things, so they don't.
+fn addable(it: &Item) -> bool {
+    it.playable || (it.route.is_some() && matches!(it.kind.as_str(), "movie" | "episode"))
+}
+
+#[cfg(test)]
+mod add_tests {
+    fn item(v: serde_json::Value) -> super::Item {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn what_can_be_added() {
+        assert!(super::addable(&item(serde_json::json!({ "id": "s", "kind": "stream", "title": "1080p", "playable": true }))));
+        assert!(super::addable(&item(serde_json::json!({ "id": "m", "kind": "movie", "title": "M", "route": "streams:movie:tt1" }))));
+        assert!(super::addable(&item(serde_json::json!({ "id": "e", "kind": "episode", "title": "E", "route": "streams:series:tt1:1:1" }))));
+        assert!(!super::addable(&item(serde_json::json!({ "id": "x", "kind": "series", "title": "S", "route": "meta:series:tt1" }))));
+        assert!(!super::addable(&item(serde_json::json!({ "id": "f", "kind": "folder", "title": "F", "route": "/a" }))));
     }
 }

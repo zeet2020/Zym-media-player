@@ -231,7 +231,7 @@ pub fn parse_page(v: Value) -> Result<Page, String> {
                 }
                 Ok(_) | Err(_) => {
                     page.dropped += 1;
-                    eprintln!("source: dropped invalid item: {raw}");
+                    crate::log::warn("plugin", &format!("dropped invalid item: {raw}"));
                 }
             }
         }
@@ -489,7 +489,7 @@ fn load_from(user: &Path, bundled: &[PathBuf]) -> Vec<Arc<Installed>> {
             match Installed::load(&dir, user.join(&id)) {
                 Ok(s) if out.iter().any(|o| o.manifest.id == s.manifest.id) => {}
                 Ok(s) => out.push(Arc::new(s)),
-                Err(err) => eprintln!("source: skipped {}: {err}", dir.display()),
+                Err(err) => crate::log::warn("plugin", &format!("skipped {}: {err}", dir.display())),
             }
         }
     }
