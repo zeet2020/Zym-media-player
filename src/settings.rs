@@ -416,10 +416,7 @@ impl Player {
             .child(heading("MUSIC VISUALIZER"))
             .child(note("Shown while a file with no video plays, such as an mp3."))
             .child(div().flex().flex_wrap().gap_2().px_4().children(crate::visualizer::Style::ALL.map(|(label, style)| {
-                chip(SharedString::from(format!("viz-{label}")), label, self.viz.style == style).on_click(cx.listener(move |this, _, _, _| {
-                    this.viz.style = style;
-                    style.save();
-                }))
+                chip(SharedString::from(format!("viz-{label}")), label, self.viz.style == style).on_click(cx.listener(move |this, _, _, _| this.set_visualizer(style)))
             })))
     }
 

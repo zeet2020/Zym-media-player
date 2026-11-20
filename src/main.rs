@@ -818,6 +818,11 @@ impl Player {
     /// Keep mpv's `@viz` analysis filter in the audio chain while music plays with a visualizer
     /// chosen; it stays across tracks and while stopped (adding it restarts the audio), and goes
     /// when a file with video plays or the visualizer is off.
+    pub fn set_visualizer(&mut self, style: visualizer::Style) {
+        self.viz.style = style;
+        style.save();
+    }
+
     fn update_visualizer(&mut self) {
         let want = if self.viz.style == visualizer::Style::Off || self.mpv.get_string("video-codec").is_some() {
             false
@@ -1446,6 +1451,13 @@ impl Player {
                 ui("Fullscreen", |_, w, _| w.toggle_fullscreen()).hint("F").checked(window.is_fullscreen()),
                 ui("Add Subtitle File…", |p, _, cx| p.open_dialog(OpenKind::Subtitle, cx)),
             ]),
+        ]
+        .into_iter()
+        // Quick switch while music plays (no video track); the same choice as Settings › Appearance.
+        .chain(self.mpv.get_string("video-codec").is_none().then(|| {
+            sub("Visualizer", visualizer::Style::ALL.iter().map(|&(label, style)| ui(label, move |p, _, _| p.set_visualizer(style)).checked(self.viz.style == style)).collect())
+        }))
+        .chain([
             Item::Sep,
             ui("Quick Settings", |p, _, _| p.toggle_pop()).hint("S").checked(self.pop.is_some()),
             ui("Settings", |p, _, cx| p.open_settings(settings::Tab::Appearance, cx)).hint("Ctrl+,"),
@@ -1456,7 +1468,8 @@ impl Player {
                 p.check_for_update(cx);
             }),
             ui("Quit", |_, _, cx| cx.quit()).hint("Q"),
-        ]
+        ])
+        .collect()
     }
 }
 

@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, canvas, fill, hsla, point, prelude::*, px, size};
+use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, canvas, fill, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, size};
 
 pub const BANDS: usize = 16;
 /// Filter label; also the property name "af-metadata/viz".
@@ -23,11 +23,12 @@ pub enum Style {
     Bars,
     Wave,
     Circle,
+    Dots,
     Stars,
 }
 
 impl Style {
-    pub const ALL: [(&str, Style); 5] = [("Off", Style::Off), ("Bars", Style::Bars), ("Wave", Style::Wave), ("Circle", Style::Circle), ("Stars", Style::Stars)];
+    pub const ALL: [(&str, Style); 6] = [("Off", Style::Off), ("Bars", Style::Bars), ("Wave", Style::Wave), ("Circle", Style::Circle), ("Dots", Style::Dots), ("Stars", Style::Stars)];
 
     fn name(self) -> &'static str {
         Style::ALL.iter().find(|(_, s)| *s == self).map(|(n, _)| *n).unwrap_or("Off")
@@ -253,20 +254,25 @@ impl Snap {
         match self.style {
             Style::Off => {}
             Style::Bars => {
-                let n = ((w / 14.) as usize).clamp(16, 96);
-                let slot = w * 0.8 / n as f32;
-                let (left, base, max_h) = (w * 0.1, h * 0.78, h * 0.5);
+                // Wide bars, 3 px apart, rounded tops, each a vertical gradient (the look of
+                // MusicMotion's bars, MIT), with falling peak caps and a faint reflection.
+                let gap = 3.;
+                let n = ((w * 0.8 / 22.) as usize).clamp(12, 48);
+                let bw = ((w * 0.8 - gap * (n - 1) as f32) / n as f32).max(2.);
+                let (left, base, max_h) = ((w - (bw + gap) * n as f32 + gap) / 2., h * 0.78, h * 0.5);
+                let r = (bw / 2.).min(4.);
                 for i in 0..n {
                     let x = i as f32 / (n - 1) as f32;
-                    let lv = Viz::at(&self.levels, x);
-                    let bh = (lv * max_h).max(2.);
-                    let bx = left + i as f32 * slot + slot * 0.15;
-                    let bw = slot * 0.7;
-                    window.paint_quad(fill(Bounds::new(p(bx, base - bh), size(px(bw), px(bh))), self.color(x, 0.55, 0.9)).corner_radii(px(bw.min(4.) / 2.)));
-                    // Reflection.
-                    window.paint_quad(fill(Bounds::new(p(bx, base + 3.), size(px(bw), px(bh * 0.25))), self.color(x, 0.55, 0.15)));
-                    let pk = base - Viz::at(&self.peaks, x) * max_h - 6.;
-                    window.paint_quad(fill(Bounds::new(p(bx, pk), size(px(bw), px(3.))), self.color(x, 0.8, 0.95)));
+                    let bh = (Viz::at(&self.levels, x) * max_h).max(3.);
+                    let bx = left + i as f32 * (bw + gap);
+                    let grad = linear_gradient(0., linear_color_stop(self.color(x, 0.5, 0.95), 0.), linear_color_stop(self.color(x + 0.6, 0.62, 0.95), 1.));
+                    window.paint_quad(
+                        fill(Bounds::new(p(bx, base - bh), size(px(bw), px(bh))), grad)
+                            .corner_radii(gpui::Corners { top_left: px(r), top_right: px(r), bottom_left: px(0.), bottom_right: px(0.) }),
+                    );
+                    window.paint_quad(fill(Bounds::new(p(bx, base + 3.), size(px(bw), px(bh * 0.25))), self.color(x, 0.5, 0.12)));
+                    let pk = base - Viz::at(&self.peaks, x) * max_h - 7.;
+                    window.paint_quad(fill(Bounds::new(p(bx, pk), size(px(bw), px(3.))), self.color(x + 0.6, 0.8, 0.95)).corner_radii(px(1.5)));
                 }
             }
             Style::Wave => {
@@ -324,6 +330,22 @@ impl Snap {
                 }
                 if let Ok(ring) = ring.build() {
                     window.paint_path(ring, self.color(0., 0.75, 0.5 + 0.5 * self.pulse));
+                }
+            }
+            Style::Dots => {
+                // A row of glowing dots on the centre line; each swells with its part of the spectrum.
+                let n = ((w * 0.8 / 34.) as usize).clamp(10, 32);
+                let step = w * 0.8 / n as f32;
+                let max_r = (step * 0.5).min(h * 0.2);
+                for i in 0..n {
+                    let x = i as f32 / (n - 1) as f32;
+                    let lv = Viz::at(&self.levels, x);
+                    let (dx, dy) = (w * 0.1 + step * (i as f32 + 0.5), h / 2.);
+                    let r = (2. + lv * max_r) * (1. + 0.15 * self.pulse);
+                    for (scale, light, alpha) in [(2.2, 0.5, 0.08 * lv), (1.5, 0.55, 0.18 * lv), (1., 0.6, 0.95)] {
+                        let rr = r * scale;
+                        window.paint_quad(fill(Bounds::new(p(dx - rr, dy - rr), size(px(rr * 2.), px(rr * 2.))), self.color(x, light, alpha)).corner_radii(px(rr)));
+                    }
                 }
             }
             Style::Stars => {
