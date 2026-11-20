@@ -12,6 +12,7 @@ mod playlists;
 mod remote;
 mod settings;
 mod textbox;
+mod update;
 mod sources;
 mod theme;
 
@@ -600,6 +601,8 @@ pub struct Player {
     /// Details cards from content plugins, by stream URL (= mpv playlist filename).
     pub infos: std::collections::HashMap<String, sources::Info>,
     pub info_open: bool,
+    /// Result of the update check About runs (once per session unless it failed).
+    pub update: update::Update,
     /// Per text box (by field): text start x, font and size from the last paint, for click-to-caret.
     pub text_geo: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, (gpui::Pixels, gpui::Font, gpui::Pixels)>>>,
     /// Text box with keyboard focus (search, add-URL, settings form).
@@ -728,6 +731,7 @@ impl Player {
             panel_drag: false,
             infos: Default::default(),
             info_open: false,
+            update: Default::default(),
             text_geo: Default::default(),
             editing: None,
             add_url: String::new(),
@@ -1274,6 +1278,7 @@ impl Player {
                     .child(line("Playback engine", mpv_v))
                     .child(line("FFmpeg", ff_v))
                     .child(line("Plugins", plugins_dir().display().to_string()))
+                    .child(self.update_row(cx))
                     .child(
                         div().pt_3().flex().justify_end().child(
                             chip("about-close", "Close", true).on_click(cx.listener(|this, _, _, _| this.about = false)),
@@ -1348,9 +1353,10 @@ impl Player {
             ui("Quick Settings", |p, _, _| p.toggle_pop()).hint("S").checked(self.pop.is_some()),
             ui("Settings", |p, _, _| p.open_settings(settings::Tab::Appearance)).hint("Ctrl+,"),
             Item::Sep,
-            ui(format!("About {APP_NAME}"), |p, _, _| {
+            ui(format!("About {APP_NAME}"), |p, _, cx| {
                 p.close_overlays();
                 p.about = true;
+                p.check_for_update(cx);
             }),
             ui("Quit", |_, _, cx| cx.quit()).hint("Q"),
         ]
