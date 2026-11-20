@@ -325,9 +325,9 @@ impl Snap {
                 // Wide bars, 3 px apart, rounded tops, each a vertical gradient (the look of
                 // MusicMotion's bars, MIT), with falling peak caps and a faint reflection.
                 let gap = 3.;
-                let n = ((w * 0.8 / 22.) as usize).clamp(12, 48);
-                let bw = ((w * 0.8 - gap * (n - 1) as f32) / n as f32).max(2.);
-                let (left, base, max_h) = ((w - (bw + gap) * n as f32 + gap) / 2., h * 0.78, h * 0.5);
+                let n = ((w * 0.96 / 22.) as usize).clamp(12, 96);
+                let bw = ((w * 0.96 - gap * (n - 1) as f32) / n as f32).max(2.);
+                let (left, base, max_h) = ((w - (bw + gap) * n as f32 + gap) / 2., h * 0.86, h * 0.74);
                 let r = (bw / 2.).min(4.);
                 for i in 0..n {
                     let x = i as f32 / (n - 1) as f32;
@@ -346,11 +346,11 @@ impl Snap {
             Style::Led => {
                 // Classic LED meter: columns of segments lit up to the level, green to red,
                 // unlit segments faintly visible, the peak segment held then falling.
-                let cols = ((w * 0.8 / 26.) as usize).clamp(12, 32);
+                let cols = ((w * 0.96 / 26.) as usize).clamp(12, 64);
                 let segs = 24;
-                let (aw, ah) = (w * 0.8, h * 0.56);
+                let (aw, ah) = (w * 0.96, h * 0.84);
                 let (cw, sh) = (aw / cols as f32, ah / segs as f32);
-                let (left, bottom) = ((w - aw) / 2., h * 0.8);
+                let (left, bottom) = ((w - aw) / 2., h * 0.92);
                 for c in 0..cols {
                     let x = c as f32 / (cols - 1) as f32;
                     let lit = Viz::at(&self.levels, x) * segs as f32;
@@ -375,7 +375,7 @@ impl Snap {
             }
             Style::Wave => {
                 let mid = h / 2.;
-                let amp = h * 0.28 * (1. + 0.25 * self.pulse);
+                let amp = h * 0.4 * (1. + 0.25 * self.pulse);
                 let steps = 240;
                 // Each band adds a sine at its own speed, so the line moves like the music sounds.
                 let y = |x: f32| -> f32 {
@@ -385,7 +385,7 @@ impl Snap {
                         s += lv * (x * k * std::f32::consts::TAU + self.time * (1. + i as f32 * 0.6)).sin() / (1. + i as f32 * 0.15);
                     }
                     let edge = (x * std::f32::consts::PI).sin(); // pinned at both ends
-                    mid - s / 3. * amp * edge
+                    (mid - s / 3. * amp * edge).clamp(h * 0.04, h * 0.96)
                 };
                 // Glow: wide faint strokes under a thin bright one.
                 for (width, light, alpha) in [(18., 0.5, 0.06), (9., 0.55, 0.14), (4., 0.65, 0.4), (2., 0.85, 1.)] {
@@ -405,8 +405,8 @@ impl Snap {
                 // satellites with trails, a shockwave on every kick, a flash on the snare.
                 let (cx, cy) = (w / 2., h / 2.);
                 let m = w.min(h);
-                let r0 = m * 0.17 * (1. + 0.12 * self.pulse);
-                let len = m * 0.24;
+                let r0 = m * 0.2 * (1. + 0.12 * self.pulse);
+                let len = m * 0.27;
                 let n = 96;
                 for i in 0..n {
                     // Mirrored: low notes at the top, high notes at the bottom, on both sides.
@@ -449,23 +449,29 @@ impl Snap {
                 // Shockwaves.
                 for age in &self.shocks {
                     let t = age / SHOCK_LIFE;
-                    let r = r0 + t * m * 0.6;
+                    let r = r0 + t * w.max(h) * 0.7;
                     line(window, &ring(r, 0., TAU), (4. * (1. - t)).max(0.5), self.color(0.1, 0.7, 0.6 * (1. - t) * (1. - t)));
                 }
             }
             Style::Dots => {
-                // A row of glowing dots on the centre line; each swells with its part of the spectrum.
-                let n = ((w * 0.8 / 34.) as usize).clamp(10, 32);
-                let step = w * 0.8 / n as f32;
-                let max_r = (step * 0.5).min(h * 0.2);
-                for i in 0..n {
-                    let x = i as f32 / (n - 1) as f32;
-                    let lv = Viz::at(&self.levels, x);
-                    let (dx, dy) = (w * 0.1 + step * (i as f32 + 0.5), h / 2.);
-                    let r = (2. + lv * max_r) * (1. + 0.15 * self.pulse);
-                    for (scale, light, alpha) in [(2.2, 0.5, 0.08 * lv), (1.5, 0.55, 0.18 * lv), (1., 0.6, 0.95)] {
-                        let rr = r * scale;
-                        window.paint_quad(fill(Bounds::new(p(dx - rr, dy - rr), size(px(rr * 2.), px(rr * 2.))), self.color(x, light, alpha)).corner_radii(px(rr)));
+                // A full-screen grid of dots: each column lights up and down from the centre line
+                // as far as its part of the spectrum reaches; lit dots glow, the centre ones swell.
+                let step = 26.;
+                let (cols, half) = ((w / step) as usize, ((h / 2.) / step) as usize);
+                let (x0, cy) = ((w - cols as f32 * step) / 2. + step / 2., h / 2.);
+                for i in 0..cols {
+                    let x = i as f32 / (cols.max(2) - 1) as f32;
+                    let reach = Viz::at(&self.levels, x) * half as f32;
+                    for j in 0..=half {
+                        let on = (reach - j as f32 + 1.).clamp(0., 1.);
+                        let r = step * (0.16 + 0.14 * on) * if j == 0 { 1. + 0.3 * self.pulse } else { 1. };
+                        for dy in if j == 0 { vec![0.] } else { vec![-1., 1.] } {
+                            let (dx, y) = (x0 + i as f32 * step, cy + dy * j as f32 * step);
+                            if on > 0.5 {
+                                circle(window, dx, y, r * 2., self.color(x, 0.5, 0.1 * on));
+                            }
+                            circle(window, dx, y, r, self.color(x, 0.45 + 0.2 * on, 0.06 + 0.9 * on));
+                        }
                     }
                 }
             }
