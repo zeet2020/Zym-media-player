@@ -44,7 +44,11 @@ static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 /// Properties the UI reads every frame. mpv_get_property waits for mpv's core, which is often busy
 /// (opening a stream, switching YouTube formats): 100-300 ms UI freezes, Explorer included. The event
 /// thread observes these instead and keeps the latest value here; reads never block.
-const OBSERVED: [&str; 11] = ["time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist"];
+const OBSERVED: [&str; 18] = [
+    "time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist",
+    // ⓘ card file facts
+    "filename", "file-size", "width", "height", "video-codec", "audio-codec-name", "file-format",
+];
 static CACHE: Mutex<std::collections::BTreeMap<&'static str, String>> = Mutex::new(std::collections::BTreeMap::new());
 
 /// lavfi filter for a clockwise rotation in degrees ("" = none). The sw renderer can't rotate.
@@ -1380,7 +1384,7 @@ fn mpv_key_name(k: &gpui::Keystroke) -> String {
     out + key
 }
 
-fn fmt_time(s: f64) -> String {
+pub fn fmt_time(s: f64) -> String {
     let s = s.max(0.0) as u64;
     if s >= 3600 {
         format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
@@ -1879,7 +1883,8 @@ impl Render for Player {
             .when(self.explorer.open, |d| d.child(self.render_explorer(window, cx)))
             .children(self.settings.as_ref().map(|s| self.render_settings(s, window, cx)))
             .when(self.pl.open, |d| d.child(self.render_playlists(window, cx)))
-            .when(self.info_open, |d| d.children(self.render_info_card(window, cx)))
+            // Fades with the controls; stays open (shown again on mouse move) until closed.
+            .when(self.info_open && show_ui, |d| d.children(self.render_info_card(ui_alpha, window, cx)))
             .when(self.add_popup, |d| d.child(add_dialog))
             .children(self.menu.as_ref().map(|state| {
                 let items = match &state.field {
