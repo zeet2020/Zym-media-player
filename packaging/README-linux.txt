@@ -8,3 +8,4 @@ Vulkan driver.
   Fedora:        sudo dnf install mpv-libs vulkan-loader
 
 The .deb / .rpm packages on the release page pull these in automatically.
+The .AppImage bundles libmpv; it needs only a Vulkan driver (glibc 2.39+, e.g. Ubuntu 24.04+).

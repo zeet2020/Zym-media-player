@@ -17,10 +17,15 @@ env:
   # Windows libmpv (shinchiro/mpv-winbuild-cmake). Bump URL + SHA256 together.
   MPV_DEV_URL: https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261111/mpv-dev-x86_64-20261111-git-bcde6b93cc.7z
   MPV_DEV_SHA256: 273c079b11ea5575822f972756f4c9a71149a5c10130353abeb8586738938452
+  # AppImage bundler. Bump URL + SHA256 together.
+  LINUXDEPLOY_URL: https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+  LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
 
 jobs:
+  # Pinned to the oldest supported Ubuntu: binaries need a glibc at least as new as the build's,
+  # so a 24.04 build runs on 24.04 and newer (ubuntu-latest would lock out older releases).
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -91,7 +96,28 @@ jobs:
             cp "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$t/sources/$id/plugin.wasm"
           done
           tar czf "dist/$t.tar.gz" "$t"
-          ls -l dist
+
+      # Bundles libmpv and its libraries; glibc, GL and the dlopen()ed Vulkan/Wayland come from the host.
+      - name: Package AppImage
+        run: |
+          sudo apt-get install -y --no-install-recommends file
+          curl -sSLo "$RUNNER_TEMP/linuxdeploy" "$LINUXDEPLOY_URL"
+          echo "$LINUXDEPLOY_SHA256  $RUNNER_TEMP/linuxdeploy" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/linuxdeploy"
+          d=AppDir
+          install -Dm755 target/release/zym-player "$d/usr/bin/zym-player"
+          # Bundled plugins: the player reads <exe dir>/../share/zym-player/sources/<id>/
+          for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
+            crate=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1 | tr - _)
+            id=$(jq -r .id "$dir/manifest.json")
+            install -Dm644 "$dir/manifest.json" "$d/usr/share/zym-player/sources/$id/manifest.json"
+            install -Dm644 "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$d/usr/share/zym-player/sources/$id/plugin.wasm"
+          done
+          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="dist/zym-player-$VERSION-x86_64.AppImage" \
+            "$RUNNER_TEMP/linuxdeploy" --appdir "$d" \
+            -d packaging/zym-player.desktop -i packaging/zym-player.svg --output appimage
+
+      - run: ls -l dist
 
       - uses: actions/upload-artifact@v7
         with:
