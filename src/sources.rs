@@ -494,7 +494,13 @@ fn load_from(user: &Path, bundled: &[PathBuf]) -> Vec<Arc<Installed>> {
         }
     }
     out.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+    sort_by_order(&mut out, &crate::settings::content_order());
     out
+}
+
+/// Plugins in `order` (ids, as arranged in Settings) first, in that order; the rest after, by name.
+fn sort_by_order(list: &mut [Arc<Installed>], order: &[String]) {
+    list.sort_by_key(|p| order.iter().position(|id| *id == p.manifest.id).unwrap_or(usize::MAX));
 }
 
 // ------------------------------------------------------------------ images

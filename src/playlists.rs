@@ -532,7 +532,7 @@ fn item_row(id: String, i: usize, name: &str, current: bool) -> Stateful<Div> {
 }
 
 /// Index to swap row `i` with when moving it one step, or None at the edge.
-fn move_target(i: usize, up: bool, len: usize) -> Option<usize> {
+pub fn move_target(i: usize, up: bool, len: usize) -> Option<usize> {
     if up { i.checked_sub(1) } else { (i + 1 < len).then_some(i + 1) }
 }
 

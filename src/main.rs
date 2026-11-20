@@ -47,10 +47,12 @@ static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 /// Properties the UI reads every frame. mpv_get_property waits for mpv's core, which is often busy
 /// (opening a stream, switching YouTube formats): 100-300 ms UI freezes, Explorer included. The event
 /// thread observes these instead and keeps the latest value here; reads never block.
-const OBSERVED: [&str; 18] = [
+const OBSERVED: [&str; 19] = [
     "time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist",
     // ⓘ card file facts
     "filename", "file-size", "width", "height", "video-codec", "audio-codec-name", "file-format",
+    // Quick Settings › Video
+    "hwdec-current",
 ];
 static CACHE: Mutex<std::collections::BTreeMap<&'static str, String>> = Mutex::new(std::collections::BTreeMap::new());
 
@@ -72,6 +74,23 @@ fn parse_playlist(json: &str) -> Vec<(String, String)> {
             (s("filename"), s("title"))
         })
         .collect()
+}
+
+/// What's decoding the video right now, worded so "hardware decoding on" + CPU decoding makes sense:
+/// the GPU can't decode every codec (e.g. AV1 or VP9 on older cards) and mpv then falls back to the CPU.
+fn decoder_note(hw_on: bool, idle: bool, current: Option<&str>, codec: Option<&str>) -> Option<String> {
+    if idle {
+        return None;
+    }
+    let codec = codec.map(|c| c.split_whitespace().next().unwrap_or(c).to_uppercase());
+    Some(match (hw_on, current.filter(|c| !c.is_empty() && *c != "no")) {
+        (_, Some(api)) => format!("Decoding on the GPU ({})", api.trim_end_matches("-copy")),
+        (false, None) => "Decoding on the CPU".into(),
+        (true, None) => match codec {
+            Some(c) => format!("Decoding on the CPU: your GPU can't decode {c} video"),
+            None => "Decoding on the CPU: your GPU can't decode this video".into(),
+        },
+    })
 }
 
 /// Some(value) for an observed property (None inside = currently unavailable); None = not observed.
@@ -786,6 +805,11 @@ impl Player {
         player
     }
 
+    /// Playing with no video track (an mp3 without cover art): mpv never sends a frame.
+    fn audio_only(&self) -> bool {
+        self.mpv.get_f64("time-pos").is_some() && self.mpv.get_string("video-codec").is_none()
+    }
+
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         HEARTBEAT.fetch_add(1, Ordering::Relaxed);
         theme::resolve(window.appearance());
@@ -799,9 +823,10 @@ impl Player {
                 window.drop_image(old).ok(); // free atlas slot, or GPU memory grows forever
             }
         }
-        if self.mpv.get_flag("idle-active") {
+        // Stopped, or now playing audio only: don't leave the last video's frame on screen.
+        if self.mpv.get_flag("idle-active") || self.audio_only() {
             if let Some(old) = self.frame.take() {
-                window.drop_image(old).ok(); // stopped: don't leave the last frame on screen
+                window.drop_image(old).ok();
             }
         }
         // Stopped/empty, or the last item finished (keep-open holds its final frame): no stale title.
@@ -1197,7 +1222,7 @@ impl Player {
             Pop::Video => {
                 let rotate = USER_ROTATE.load(Ordering::Relaxed);
                 let hw_on = m.get_string("hwdec").unwrap_or_default() != "no";
-                let hw = m.get_string("hwdec-current").filter(|h| h != "no").unwrap_or_else(|| "software".into());
+                let decoder = decoder_note(hw_on, m.get_flag("idle-active"), m.get_string("hwdec-current").as_deref(), m.get_string("video-codec").as_deref());
                 body.child(self.pop_header("Video", cx))
                     .child(Self::pop_note("ASPECT RATIO"))
                     .children(ASPECTS.map(|(l, val)| self.radio_row(format!("asp-{l}"), l, aspect_label == l, v(&["set", "video-aspect-override", val]), cx)))
@@ -1221,7 +1246,7 @@ impl Player {
                             .child(switch(hw_on))
                             .on_click(cx.listener(move |this, _, _, _| this.set_hwdec(!hw_on))),
                     )
-                    .child(Self::pop_note(&format!("Decoder: {hw}")))
+                    .children(decoder.map(|d| Self::pop_note(&d)))
             }
             Pop::Picture => body
                 .child(self.pop_header("Picture", cx))
@@ -1562,6 +1587,16 @@ impl Render for Player {
             }))
             .child(match &self.frame {
                 Some(f) => img(f.clone()).size_full().into_any_element(),
+                None if self.audio_only() => div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_4()
+                    .px_8()
+                    .text_color(rgb(0x9a9a9a))
+                    .child(icon("music").size(px(72.)).text_color(rgb(0x707070)))
+                    .child(div().text_lg().text_center().child(self.title.clone()))
+                    .into_any_element(),
                 None => div()
                     .text_color(rgb(0x808080))
                     .child(match (self.mpv.get_i64("playlist-count").unwrap_or(0), self.mpv.get_flag("idle-active")) {
@@ -2043,5 +2078,17 @@ mod redact_tests {
         assert_eq!(super::redact(r#"["loadfile", "sftp://me:p@ss@nas:22/a b.mkv", "replace"]"#), r#"["loadfile", "sftp://me:***@nas:22/a b.mkv", "replace"]"#);
         assert_eq!(super::redact("http://host/x?a=b@c"), "http://host/x?a=b@c"); // '@' after the path isn't userinfo
         assert_eq!(super::redact("no url here"), "no url here");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decoder_note_explains_fallback() {
+        use super::decoder_note as n;
+        assert_eq!(n(true, true, None, None), None, "nothing playing");
+        assert_eq!(n(true, false, Some("nvdec-copy"), Some("h264")).unwrap(), "Decoding on the GPU (nvdec)");
+        assert_eq!(n(false, false, Some("no"), Some("h264")).unwrap(), "Decoding on the CPU");
+        assert_eq!(n(true, false, Some("no"), Some("av1 (Alliance for Open Media AV1)")).unwrap(), "Decoding on the CPU: your GPU can't decode AV1 video");
     }
 }

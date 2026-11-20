@@ -214,6 +214,11 @@ fn set_disabled(kind: &str, name: &str, off: bool) -> Vec<String> {
     list
 }
 
+/// Content plugin ids in the order the Explorer lists them (Settings › Plugins ↑ ↓).
+pub fn content_order() -> Vec<String> {
+    get("content_order").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
 /// mpv Lua/JS scripts in the plugins dir: .lua/.js files, or folders (main.lua inside).
 pub fn scripts() -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(crate::plugins_dir()) else { return vec![] };
@@ -410,21 +415,31 @@ impl Player {
             })))
     }
 
+    /// ↑ ↓ on a content plugin: reorder it in the Explorer and save the order.
+    fn content_move(&mut self, i: usize, up: bool) {
+        let Some(s) = self.settings.as_mut() else { return };
+        let Some(j) = crate::playlists::move_target(i, up, s.content.len()) else { return };
+        s.content.swap(i, j);
+        put("content_order", json!(s.content.iter().map(|(id, _)| id).collect::<Vec<_>>()));
+        self.explorer.loaded = false;
+    }
+
     fn plugins_tab(&self, s: &SettingsPanel, cx: &mut Context<Self>) -> Div {
         let (off_content, off_scripts) = (&s.off_content, &s.off_scripts);
         div()
             .child(heading("CONTENT PLUGINS"))
-            .child(note("Feed the Explorer. A disabled plugin is hidden there; its connections are kept."))
-            .children(s.content.iter().map(|(id, name)| {
+            .child(note("Feed the Explorer, in this order (hover a row for ↑ ↓). A disabled plugin is hidden there; its connections are kept."))
+            .children(s.content.iter().enumerate().map(|(i, (id, name))| {
                 let on = !off_content.contains(id);
                 let id = id.clone();
-                switch_row(format!("content-{id}"), name, None, on).on_click(cx.listener(move |this, _, _, _| {
+                let row = switch_row(format!("content-{id}"), name, None, on).flex_1().min_w_0().on_click(cx.listener(move |this, _, _, _| {
                     let list = set_disabled("content", &id, on);
                     if let Some(s) = this.settings.as_mut() {
                         s.off_content = list;
                     }
                     this.explorer.loaded = false; // re-read the plugin list next time the Explorer opens
-                }))
+                }));
+                div().group("plrow").flex().items_center().pr_2().child(row).children(crate::playlists::move_buttons("content", i, s.content.len(), cx, Player::content_move))
             }))
             .when(s.content.is_empty(), |d| d.child(note("None installed.")))
             .child(heading("SCRIPTS"))
