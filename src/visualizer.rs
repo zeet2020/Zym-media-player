@@ -1,4 +1,4 @@
-//! Music visualizer: drawn by the player while an audio-only file plays (Settings › Appearance).
+//! Music visualizer: drawn by the player while an audio-only file plays (style picked in right-click › Visualizer).
 //!
 //! Data: an mpv audio filter (`@viz`, see `filter()`) splits the sound into BANDS band-pass
 //! filters and measures each one's loudness per audio frame; mpv publishes that as the filter's

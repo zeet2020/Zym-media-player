@@ -1453,7 +1453,7 @@ impl Player {
             ]),
         ]
         .into_iter()
-        // Quick switch while music plays (no video track); the same choice as Settings › Appearance.
+        // Visualizer style, shown while no video plays (music); saved as ui.visualizer.
         .chain(self.mpv.get_string("video-codec").is_none().then(|| {
             sub("Visualizer", visualizer::Style::ALL.iter().map(|&(label, style)| ui(label, move |p, _, _| p.set_visualizer(style)).checked(self.viz.style == style)).collect())
         }))
