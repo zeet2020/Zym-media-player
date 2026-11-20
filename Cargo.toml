@@ -1,6 +1,6 @@
 [package]
 name = "zym-media-player"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.93"
 description = "Zym Media Player — a lightweight media player built on mpv and GPUI"

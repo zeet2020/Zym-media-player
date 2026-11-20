@@ -3255,7 +3255,7 @@ insights.
 ## GNU General Public License v3.0 or later
 
 Used by:
-- zym-media-player 0.1.1 — https://github.com/zeet2020/Zym-media-player
+- zym-media-player 0.1.2 — https://github.com/zeet2020/Zym-media-player
 
 ```
                     GNU GENERAL PUBLIC LICENSE

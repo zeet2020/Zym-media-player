@@ -12,6 +12,7 @@ GPUI; playback is handled by libmpv, so it plays anything mpv plays.
   (only direct/debrid stream URLs play; torrents are not supported)
 - Several connections per plugin (e.g. two WebDAV servers), switchable from a dropdown
 - Appearance: dark / light / system theme with accent colours
+- Music visualizer for audio files (right-click › Visualizer): bars, LED, wave, circle, dots, horizon, stars — reacting to kicks, snares, tempo and drops
 - Scripts: any mpv Lua/JS script
 
 ## Build (Ubuntu)
