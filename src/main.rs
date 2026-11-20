@@ -15,6 +15,7 @@ mod remote;
 mod settings;
 mod textbox;
 mod update;
+mod visualizer;
 mod sources;
 mod theme;
 
@@ -47,12 +48,13 @@ static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 /// Properties the UI reads every frame. mpv_get_property waits for mpv's core, which is often busy
 /// (opening a stream, switching YouTube formats): 100-300 ms UI freezes, Explorer included. The event
 /// thread observes these instead and keeps the latest value here; reads never block.
-const OBSERVED: [&str; 19] = [
+const OBSERVED: [&str; 20] = [
     "time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist",
     // ⓘ card file facts
     "filename", "file-size", "width", "height", "video-codec", "audio-codec-name", "file-format",
     // Quick Settings › Video
     "hwdec-current",
+    visualizer::PROPERTY,
 ];
 static CACHE: Mutex<std::collections::BTreeMap<&'static str, String>> = Mutex::new(std::collections::BTreeMap::new());
 
@@ -642,6 +644,8 @@ pub struct Player {
     pub panel_drag: bool,
     /// Details cards from content plugins, by stream URL (= mpv playlist filename).
     pub infos: std::collections::HashMap<String, sources::Info>,
+    /// Music visualizer (audio-only files).
+    pub viz: visualizer::Viz,
     pub info_open: bool,
     /// Settings › mpv: couldn't create/open mpv.conf.
     pub mpv_conf_error: Option<String>,
@@ -781,6 +785,7 @@ impl Player {
             panel_w: settings::get("ui").and_then(|u| u.get("panel_width")?.as_f64()).map(|w| w as f32),
             panel_drag: false,
             infos: Default::default(),
+            viz: visualizer::Viz::new(),
             info_open: false,
             mpv_conf_error: None,
             mpv_verbose: std::env::var_os("ZYM_DEBUG").is_some(),
@@ -810,6 +815,29 @@ impl Player {
         self.mpv.get_f64("time-pos").is_some() && self.mpv.get_string("video-codec").is_none()
     }
 
+    /// Keep mpv's `@viz` analysis filter in the audio chain while music plays with a visualizer
+    /// chosen; it stays across tracks and while stopped (adding it restarts the audio), and goes
+    /// when a file with video plays or the visualizer is off.
+    fn update_visualizer(&mut self) {
+        let want = if self.viz.style == visualizer::Style::Off || self.mpv.get_string("video-codec").is_some() {
+            false
+        } else {
+            self.viz.active || self.audio_only()
+        };
+        if want != self.viz.active {
+            self.viz.active = want;
+            if want {
+                self.mpv.cmd(&["af", "add", &visualizer::filter()]);
+            } else {
+                self.mpv.cmd(&["af", "remove", &format!("@{}", visualizer::LABEL)]);
+            }
+        }
+        if self.viz.active {
+            let playing = !self.mpv.get_flag("pause") && !self.mpv.get_flag("idle-active");
+            self.viz.update(self.mpv.get_string(visualizer::PROPERTY).as_deref(), playing);
+        }
+    }
+
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         HEARTBEAT.fetch_add(1, Ordering::Relaxed);
         theme::resolve(window.appearance());
@@ -823,6 +851,7 @@ impl Player {
                 window.drop_image(old).ok(); // free atlas slot, or GPU memory grows forever
             }
         }
+        self.update_visualizer();
         // Stopped, or now playing audio only: don't leave the last video's frame on screen.
         if self.mpv.get_flag("idle-active") || self.audio_only() {
             if let Some(old) = self.frame.take() {
@@ -1587,6 +1616,12 @@ impl Render for Player {
             }))
             .child(match &self.frame {
                 Some(f) => img(f.clone()).size_full().into_any_element(),
+                None if self.audio_only() && self.viz.active => div()
+                    .size_full()
+                    .relative()
+                    .child(self.viz.element(t().accent().into()))
+                    .child(div().absolute().top(px(64.)).left_0().right_0().px_8().text_center().text_lg().text_color(rgb(0xb0b0b0)).child(self.title.clone()))
+                    .into_any_element(),
                 None if self.audio_only() => div()
                     .flex()
                     .flex_col()
