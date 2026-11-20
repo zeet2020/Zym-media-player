@@ -64,6 +64,8 @@ pub struct Theme {
     pub pressed: u32,
     pub border: u32,
     pub field: u32,
+    /// Error text on the theme's surfaces.
+    pub error: u32,
 }
 
 impl Theme {
@@ -81,6 +83,7 @@ impl Theme {
                 pressed: 0xffffff24,
                 border: 0xffffff1a,
                 field: 0xffffff10,
+                error: 0xff8080,
             }
         } else {
             Self {
@@ -89,12 +92,13 @@ impl Theme {
                 fg: 0x1c1c1e,
                 muted: 0x5c5c63,
                 dim: 0x86868c,
-                surface: 0xf4f4f6ff, // opaque: translucency shows the video-area text through light panels
+                surface: 0xf4f4f6ea, // same 92% as dark; much lower and video-area text bleeds through
                 surface_solid: 0xffffff,
                 hover: 0x0000000d,
                 pressed: 0x0000001c,
                 border: 0x00000020,
                 field: 0x0000000a,
+                error: 0xc62828,
             }
         }
     }
@@ -108,6 +112,7 @@ impl Theme {
     pub fn pressed(&self) -> Rgba { rgba(self.pressed) }
     pub fn border(&self) -> Rgba { rgba(self.border) }
     pub fn field(&self) -> Rgba { rgba(self.field) }
+    pub fn error(&self) -> Rgba { rgb(self.error) }
     pub fn accent(&self) -> Rgba { rgb(self.accent) }
     /// Accent at `alpha` (0..=255), for selected-row / chip backgrounds.
     pub fn accent_a(&self, alpha: u8) -> Rgba { rgba(self.accent << 8 | alpha as u32) }
@@ -136,37 +141,16 @@ pub fn resolve(os: WindowAppearance) {
     *CURRENT.write().unwrap() = Some(Theme::new(dark, p.accent));
 }
 
-fn settings_path() -> std::path::PathBuf {
-    crate::plugins_dir().parent().unwrap().join("settings.json")
-}
-
-/// Load saved prefs (missing/invalid file -> defaults).
+/// Load saved prefs (missing/invalid -> defaults).
 pub fn load() {
-    let p = std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.get("appearance").cloned())
-        .and_then(|a| serde_json::from_value(a).ok())
-        .unwrap_or_default();
+    let p = crate::settings::get("appearance").and_then(|a| serde_json::from_value(a).ok()).unwrap_or_default();
     *PREFS.write().unwrap() = p;
 }
 
-/// Change + persist (merges into settings.json so other keys survive).
+/// Change + persist.
 pub fn set(p: Prefs) {
     *PREFS.write().unwrap() = p;
-    let path = settings_path();
-    let mut root: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .filter(|v: &serde_json::Value| v.is_object())
-        .unwrap_or_else(|| serde_json::json!({}));
-    root["appearance"] = serde_json::to_value(p).unwrap();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).ok();
-    }
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap()) {
-        eprintln!("appearance: couldn't save {}: {e}", path.display());
-    }
+    crate::settings::put("appearance", serde_json::to_value(p).unwrap());
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-# Zym Player
+# Zym Media Player
 
 A lightweight media player for Linux and Windows, written in Rust. The UI is built with
 GPUI; playback is handled by libmpv, so it plays anything mpv plays.
@@ -8,7 +8,7 @@ GPUI; playback is handled by libmpv, so it plays anything mpv plays.
 - Playlist: add files, folders, `.m3u` playlists and URLs (playlist "+" popup or `Ctrl+L`), or drag and drop
 - Right-click menu for playback, loop, chapters, tracks and more
 - Quick-settings popover: speed, subtitles, audio, video, picture, sync
-- Explorer for sandboxed source plugins, bundled: IPTV (M3U), WebDAV, FTP / SFTP, Stremio addons
+- Explorer for sandboxed content plugins, bundled: IPTV (M3U), WebDAV, FTP / SFTP, Stremio addons
   (only direct/debrid stream URLs play; torrents are not supported)
 - Several connections per plugin (e.g. two WebDAV servers), switchable from a dropdown
 - Appearance: dark / light / system theme with accent colours
@@ -21,14 +21,14 @@ Needs Rust 1.93+, `libmpv-dev`, and GPUI's usual X11/Wayland/Vulkan development 
 ```sh
 sudo apt install libmpv-dev
 cargo build --release
-./target/release/zym-player [files...]
+./target/release/zym-media-player [files...]
 ```
 
-`zym-player --help` lists the options.
+`zym-media-player --help` lists the options.
 
-## Source plugins
+## Content plugins
 
-Source plugins are sandboxed WebAssembly modules that feed content (catalogs, channels, search)
+Content plugins are sandboxed WebAssembly modules that feed content (catalogs, channels, search)
 into the Explorer. Build and install one with:
 
 ```sh

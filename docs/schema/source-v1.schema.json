@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zym-player.local/schema/source-v1.schema.json",
-  "title": "Zym Player Source Plugin API v1",
-  "description": "Validate a document against one of: #/$defs/Manifest, #/$defs/Page, #/$defs/Playback, #/$defs/GalleryIndex. Forward compatible: unknown properties and unknown kind/layout values are allowed (see docs/plugins.md \u00a76). The player validates Page items individually and drops invalid ones.",
+  "$id": "https://zym-media-player.local/schema/source-v1.schema.json",
+  "title": "Zym Media Player Content Plugin API v1",
+  "description": "Validate a document against one of: #/$defs/Manifest, #/$defs/Page, #/$defs/Playback, #/$defs/GalleryIndex. Forward compatible: unknown properties and unknown kind/layout values are allowed (see docs/plugins.md §6). The player validates Page items individually and drops invalid ones.",
   "$defs": {
     "Manifest": {
       "type": "object",
@@ -327,6 +327,53 @@
         "start": {
           "type": "number",
           "minimum": 0
+        },
+        "info": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "subtitle": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "poster": {
+              "$ref": "#/$defs/ImageUrl"
+            },
+            "backdrop": {
+              "$ref": "#/$defs/ImageUrl"
+            },
+            "badges": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 8
+            },
+            "details": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "required": [
+                  "label",
+                  "value"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
         }
       },
       "additionalProperties": false

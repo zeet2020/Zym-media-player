@@ -2,7 +2,7 @@
 name = "zym-source-ftp"
 version = "0.1.0"
 edition = "2024"
-description = "Zym Player source plugin: browse and play media over FTP / SFTP"
+description = "Zym Media Player content plugin: browse and play media over FTP / SFTP"
 license = "GPL-3.0-or-later"
 
 [lib]

@@ -51,7 +51,7 @@ jobs:
           echo "VERSION=$v" >> "$GITHUB_ENV"
           mkdir dist
 
-      - name: Build source plugins (.zym)
+      - name: Build content plugins (.zym)
         run: |
           for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
             cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$dir/Cargo.toml"
@@ -83,9 +83,9 @@ jobs:
           cargo install cargo-deb@3.8.0 cargo-generate-rpm@0.21.1 --locked
           cargo deb --no-build --output dist/
           cargo generate-rpm --output dist/
-          t=zym-player-$VERSION-linux-x86_64
+          t=zym-media-player-$VERSION-linux-x86_64
           mkdir "$t"
-          cp target/release/zym-player LICENSE THIRD-PARTY-LICENSES.md "$t/"
+          cp target/release/zym-media-player LICENSE THIRD-PARTY-LICENSES.md "$t/"
           cp packaging/README-linux.txt "$t/README.txt"
           # Bundled plugins: the player reads <exe dir>/sources/<id>/
           for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
@@ -105,17 +105,17 @@ jobs:
           echo "$LINUXDEPLOY_SHA256  $RUNNER_TEMP/linuxdeploy" | sha256sum -c
           chmod +x "$RUNNER_TEMP/linuxdeploy"
           d=AppDir
-          install -Dm755 target/release/zym-player "$d/usr/bin/zym-player"
-          # Bundled plugins: the player reads <exe dir>/../share/zym-player/sources/<id>/
+          install -Dm755 target/release/zym-media-player "$d/usr/bin/zym-media-player"
+          # Bundled plugins: the player reads <exe dir>/../share/zym-media-player/sources/<id>/
           for dir in sources/m3u sources/webdav sources/ftp sources/stremio; do
             crate=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1 | tr - _)
             id=$(jq -r .id "$dir/manifest.json")
-            install -Dm644 "$dir/manifest.json" "$d/usr/share/zym-player/sources/$id/manifest.json"
-            install -Dm644 "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$d/usr/share/zym-player/sources/$id/plugin.wasm"
+            install -Dm644 "$dir/manifest.json" "$d/usr/share/zym-media-player/sources/$id/manifest.json"
+            install -Dm644 "$dir/target/wasm32-unknown-unknown/release/$crate.wasm" "$d/usr/share/zym-media-player/sources/$id/plugin.wasm"
           done
-          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="dist/zym-player-$VERSION-x86_64.AppImage" \
+          APPIMAGE_EXTRACT_AND_RUN=1 OUTPUT="dist/zym-media-player-$VERSION-x86_64.AppImage" \
             "$RUNNER_TEMP/linuxdeploy" --appdir "$d" \
-            -d packaging/zym-player.desktop -i packaging/zym-player.svg --output appimage
+            -d packaging/zym-media-player.desktop -i packaging/zym-media-player.svg --output appimage
 
       - run: ls -l dist
 
@@ -138,7 +138,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
 
-      - name: Build source plugins
+      - name: Build content plugins
         run: |
           foreach ($d in "sources/m3u", "sources/webdav", "sources/ftp", "sources/stremio") {
             cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$d/Cargo.toml"
@@ -167,9 +167,9 @@ jobs:
       - name: Package .zip / installer
         run: |
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches.Groups[1].Value
-          $stage = "zym-player-$v-windows-x64"
+          $stage = "zym-media-player-$v-windows-x64"
           New-Item -ItemType Directory $stage, dist | Out-Null
-          Copy-Item target\release\zym-player.exe, "$env:MPV_DIR\libmpv-2.dll", THIRD-PARTY-LICENSES.md, packaging\windows\LIBMPV-NOTICE.txt $stage
+          Copy-Item target\release\zym-media-player.exe, "$env:MPV_DIR\libmpv-2.dll", THIRD-PARTY-LICENSES.md, packaging\windows\LIBMPV-NOTICE.txt $stage
           Copy-Item LICENSE "$stage\LICENSE.txt"
           # Bundled plugins: the player reads <exe dir>\sources\<id>\
           foreach ($d in "sources/m3u", "sources/webdav", "sources/ftp", "sources/stremio") {
@@ -181,7 +181,7 @@ jobs:
           }
           Compress-Archive -Path "$stage\*" -DestinationPath "dist\$stage.zip"
           $iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source ?? (Resolve-Path "C:\Program Files*\Inno Setup*\ISCC.exe" | Select-Object -First 1).Path
-          & $iscc "/DAppVersion=$v" "/DSrcDir=$PWD\$stage" "/DOutDir=$PWD\dist" packaging\zym-player.iss
+          & $iscc "/DAppVersion=$v" "/DSrcDir=$PWD\$stage" "/DOutDir=$PWD\dist" packaging\zym-media-player.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem dist
 

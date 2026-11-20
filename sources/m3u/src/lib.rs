@@ -1,4 +1,4 @@
-//! Zym Player source plugin: IPTV channels from an M3U/M3U8 playlist.
+//! Zym Media Player content plugin: IPTV channels from an M3U/M3U8 playlist.
 //! Spec: docs/plugins.md (api 1). Groups (`group-title`) become folders; channels are `live` items.
 
 use serde_json::{Value, json};

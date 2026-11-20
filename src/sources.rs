@@ -76,6 +76,8 @@ pub struct Item {
     #[serde(default)]
     pub subtitle: Option<String>,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub art: Art,
     #[serde(default)]
     pub badges: Vec<String>,
@@ -117,6 +119,83 @@ pub struct Playback {
     pub subtitles: Vec<SubtitleRef>,
     #[serde(default)]
     pub start: Option<f64>,
+    /// Details card shown on the video (ⓘ). Optional: the player builds one from the item otherwise.
+    #[serde(default)]
+    pub info: Option<Info>,
+}
+
+/// "What's playing" card (spec §4 Playback.info). Text only; images are checked like item art.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Info {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub poster: Option<String>,
+    #[serde(default)]
+    pub backdrop: Option<String>,
+    #[serde(default)]
+    pub badges: Vec<String>,
+    #[serde(default)]
+    pub details: Vec<Detail>,
+}
+
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Detail {
+    pub label: String,
+    pub value: String,
+}
+
+impl Info {
+    /// Keep a plugin's card within sane bounds and drop unsafe image URLs (same rule as item art).
+    fn sanitize(mut self) -> Self {
+        let cut = |s: &mut String, n: usize| {
+            if let Some((i, _)) = s.char_indices().nth(n) {
+                s.truncate(i);
+                s.push('…');
+            }
+        };
+        cut(&mut self.title, 200);
+        if let Some(d) = self.description.as_mut() {
+            cut(d, 4000);
+        }
+        for u in [&mut self.poster, &mut self.backdrop] {
+            if !ok_image(u) {
+                *u = None;
+            }
+        }
+        self.badges.truncate(8);
+        self.details.truncate(20);
+        self
+    }
+
+    /// Card built from the clicked item when the plugin sends none. A stream choice ("1080p · 4.2 GB")
+    /// describes a file, so the title's details come from `parent`, the item whose page it was on.
+    pub fn from_item(item: &Item, parent: Option<&Item>) -> Info {
+        let stream = item.kind == "stream" && parent.is_some();
+        let (main, other) = if stream { (parent.unwrap(), Some(item)) } else { (item, parent) };
+        let pick = |f: fn(&Item) -> Option<String>| f(main).or_else(|| other.and_then(f));
+        let mut badges = main.badges.clone();
+        let mut details = vec![];
+        if stream {
+            badges.extend(item.badges.iter().cloned());
+            let src = [Some(item.title.clone()), item.subtitle.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+            details.push(Detail { label: "Source".into(), value: src });
+        }
+        Info {
+            title: main.title.clone(),
+            subtitle: main.subtitle.clone().or_else(|| other.filter(|_| !stream).map(|p| p.title.clone())),
+            description: pick(|i| i.description.clone()),
+            poster: pick(|i| i.art.poster.clone().or_else(|| i.art.thumb.clone())),
+            backdrop: pick(|i| i.art.backdrop.clone()),
+            badges,
+            details,
+        }
+        .sanitize()
+    }
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -179,6 +258,8 @@ pub fn parse_playback(v: Value) -> Result<Playback, String> {
     if let Some(s) = pb.subtitles.iter().find(|s| !(s.url.starts_with("http://") || s.url.starts_with("https://"))) {
         return Err(format!("refused subtitle URL: {}", s.url));
     }
+    let mut pb = pb;
+    pb.info = pb.info.map(Info::sanitize);
     Ok(pb)
 }
 
@@ -383,10 +464,10 @@ pub fn sources_dir() -> PathBuf {
 }
 
 /// Plugins shipped with the app: `<exe dir>/sources` (Windows, tarball) and
-/// `<exe dir>/../share/zym-player/sources` (deb/rpm: /usr/bin -> /usr/share).
+/// `<exe dir>/../share/zym-media-player/sources` (deb/rpm/AppImage: /usr/bin -> /usr/share).
 fn bundled_dirs() -> Vec<PathBuf> {
     let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else { return vec![] };
-    vec![exe_dir.join("sources"), exe_dir.join("../share/zym-player/sources")]
+    vec![exe_dir.join("sources"), exe_dir.join("../share/zym-media-player/sources")]
 }
 
 /// User-installed plugins first, then bundled ones; the first plugin with a given id wins.
@@ -484,6 +565,11 @@ mod tests {
     fn playback_rules() {
         assert!(parse_playback(json!({ "url": "https://a/b.m3u8", "headers": { "User-Agent": "x, y" } })).is_ok());
         assert!(parse_playback(json!({ "url": "file:///etc/passwd" })).is_err());
+        let pb = parse_playback(json!({ "url": "https://a", "info": { "title": "T", "poster": "file:///x.png", "backdrop": "https://b.jpg",
+            "details": [{ "label": "Year", "value": "1999" }] } }))
+        .unwrap();
+        let info = pb.info.unwrap();
+        assert_eq!((info.poster, info.backdrop.as_deref(), info.details.len()), (None, Some("https://b.jpg"), 1), "file:// art dropped");
         assert!(parse_playback(json!({ "url": "edl://x" })).is_err());
         assert!(parse_playback(json!({ "url": "https://a", "headers": { "X": "a\r\nB: c" } })).is_err());
         assert!(parse_playback(json!({ "url": "https://a", "headers": { "Bad Name": "v" } })).is_err());
@@ -770,5 +856,35 @@ mod tests {
         assert!(reqs.iter().all(|r| r.starts_with("PROPFIND ")), "{reqs:?}");
         assert!(reqs.iter().all(|r| r.to_ascii_lowercase().contains("depth: 1")));
         std::fs::remove_dir_all(&src.dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::*;
+
+    fn item(v: Value) -> Item {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn card_from_items() {
+        let movie = item(json!({ "id": "m", "kind": "movie", "title": "The Matrix", "subtitle": "1999", "description": "Neo…",
+            "art": { "poster": "https://p.jpg" }, "badges": ["★ 8.7"] }));
+        let stream = item(json!({ "id": "s", "kind": "stream", "title": "1080p", "subtitle": "4.2 GB", "badges": ["Cached"], "playable": true }));
+
+        // Stream picked on the movie's page: the movie describes it, the stream is the "Source".
+        let c = Info::from_item(&stream, Some(&movie));
+        assert_eq!((c.title.as_str(), c.subtitle.as_deref(), c.poster.as_deref()), ("The Matrix", Some("1999"), Some("https://p.jpg")));
+        assert_eq!(c.badges, ["★ 8.7", "Cached"]);
+        assert_eq!(c.details, [Detail { label: "Source".into(), value: "1080p · 4.2 GB".into() }]);
+
+        // An episode keeps its own title; the show fills in what it lacks.
+        let ep = item(json!({ "id": "e", "kind": "episode", "title": "1. Pilot", "playable": true }));
+        let c = Info::from_item(&ep, Some(&movie));
+        assert_eq!((c.title.as_str(), c.subtitle.as_deref(), c.description.as_deref()), ("1. Pilot", Some("The Matrix"), Some("Neo…")));
+
+        // Nothing to go on but the item itself.
+        assert_eq!(Info::from_item(&ep, None).title, "1. Pilot");
     }
 }

@@ -1,20 +1,20 @@
 ; Inno Setup script. Built by .github/workflows/release.yml:
-;   ISCC /DAppVersion=0.1.0 /DSrcDir=<dir with zym-player.exe + libmpv-2.dll> /DOutDir=<out> zym-player.iss
+;   ISCC /DAppVersion=0.1.0 /DSrcDir=<dir with zym-media-player.exe + libmpv-2.dll> /DOutDir=<out> zym-media-player.iss
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
 
 [Setup]
 AppId={{6C1E7A52-9B0D-4C5E-8E43-3F2B7D9A1C40}
-AppName=Zym Player
+AppName=Zym Media Player
 AppVersion={#AppVersion}
-AppPublisher=Zym Player
-DefaultDirName={autopf}\Zym Player
-DefaultGroupName=Zym Player
-SetupIconFile=zym-player.ico
-UninstallDisplayIcon={app}\zym-player.ico
+AppPublisher=Zym Media Player
+DefaultDirName={autopf}\Zym Media Player
+DefaultGroupName=Zym Media Player
+SetupIconFile=zym-media-player.ico
+UninstallDisplayIcon={app}\zym-media-player.ico
 OutputDir={#OutDir}
-OutputBaseFilename=zym-player-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=zym-media-player-{#AppVersion}-windows-x64-setup
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2
@@ -25,35 +25,43 @@ LicenseFile=..\LICENSE
 ChangesAssociations=yes
 
 [Files]
-Source: "{#SrcDir}\zym-player.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcDir}\zym-media-player.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\libmpv-2.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "zym-player.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "zym-media-player.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\sources\*"; DestDir: "{app}\sources"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SrcDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\THIRD-PARTY-LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\LIBMPV-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
+; Upgrading from 0.1.0, which shipped as zym-player.exe: remove the old binary.
+[InstallDelete]
+Type: files; Name: "{app}\zym-player.exe"
+Type: files; Name: "{app}\zym-player.ico"
+
 [Icons]
-Name: "{group}\Zym Player"; Filename: "{app}\zym-player.exe"; IconFilename: "{app}\zym-player.ico"
-Name: "{group}\Uninstall Zym Player"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Zym Player"; Filename: "{app}\zym-player.exe"; IconFilename: "{app}\zym-player.ico"; Tasks: desktopicon
+Name: "{group}\Zym Media Player"; Filename: "{app}\zym-media-player.exe"; IconFilename: "{app}\zym-media-player.ico"
+Name: "{group}\Uninstall Zym Media Player"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Zym Media Player"; Filename: "{app}\zym-media-player.exe"; IconFilename: "{app}\zym-media-player.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Run]
-Filename: "{app}\zym-player.exe"; Description: "{cm:LaunchProgram,Zym Player}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\zym-media-player.exe"; Description: "{cm:LaunchProgram,Zym Media Player}"; Flags: nowait postinstall skipifsilent
 
 ; Register as a media player so Windows lists Zym under Settings > Default apps / "Open with".
 ; (Windows 10/11 don't let installers silently take over defaults; the user picks Zym there.)
 [Registry]
+; Leftovers of 0.1.0's names (zym-player.exe, "Zym Player").
+Root: HKA; Subkey: "Software\Classes\Applications\zym-player.exe"; Flags: deletekey dontcreatekey
+Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: none; ValueName: "Zym Player"; Flags: deletevalue dontcreatekey
 Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media"; ValueType: string; ValueName: ""; ValueData: "Media file"; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\zym-player.ico"
-Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-player.exe"" ""%1"""
-Root: HKA; Subkey: "Software\Classes\Applications\zym-player.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-player.exe"" ""%1"""; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Zym Player"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\zym-media-player.ico"
+Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-media-player.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\zym-media-player.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-media-player.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Zym Media Player"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Lightweight media player built on mpv"
-Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "Zym Player"; ValueData: "Software\ZymPlayer\Capabilities"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "Zym Media Player"; ValueData: "Software\ZymPlayer\Capabilities"; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\ZymPlayer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mp4"; ValueData: "ZymPlayer.Media"
 Root: HKA; Subkey: "Software\Classes\.mp4\OpenWithProgids"; ValueType: string; ValueName: "ZymPlayer.Media"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\ZymPlayer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".m4v"; ValueData: "ZymPlayer.Media"

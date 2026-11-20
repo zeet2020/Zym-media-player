@@ -54,18 +54,12 @@ pub fn sub(label: impl Into<SharedString>, items: Vec<Item>) -> Item {
     Item::Sub { label: label.into(), items }
 }
 
-/// Radio-style submenu: one entry per (label, value), ✓ on the current one, click sets `prop`.
-pub fn choice(label: &str, prop: &str, current: &str, opts: &[(&str, &str)]) -> Item {
-    sub(
-        label.to_string(),
-        opts.iter().map(|(l, v)| mpv(l.to_string(), &["set", prop, v]).checked(*v == current)).collect(),
-    )
-}
-
 pub struct MenuState {
     pub origin: Point<Pixels>,
     /// open[d] = index of the submenu expanded at depth d.
     pub open: Vec<usize>,
+    /// Some = text-box menu (cut/copy/paste) for this field; bool = secret (no cut/copy).
+    pub field: Option<(crate::textbox::Field, bool)>,
 }
 
 const W: f32 = 240.;
@@ -75,7 +69,7 @@ const PAD: f32 = 4.;
 
 impl Player {
     pub fn open_menu(&mut self, at: Point<Pixels>) {
-        self.menu = Some(MenuState { origin: at, open: vec![] });
+        self.menu = Some(MenuState { origin: at, open: vec![], field: None });
     }
 
     pub fn render_menu(&self, state: &MenuState, items: &[Item], window: &Window, cx: &mut Context<Self>) -> Div {

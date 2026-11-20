@@ -1,4 +1,4 @@
-//! Zym Player source plugin: Stremio addons. Spec: docs/plugins.md (api 1).
+//! Zym Media Player content plugin: Stremio addons. Spec: docs/plugins.md (api 1).
 //! Speaks the Stremio addon protocol over HTTP: manifest.json, /catalog, /meta, /stream.
 //! Catalog addons feed the home rows and search; stream addons feed the stream list of a title.
 //! Only streams with a direct `url` are playable (no torrent engine): debrid-enabled addons work.
@@ -116,7 +116,17 @@ pub fn meta_item(m: &Value) -> Option<Value> {
         it["subtitle"] = json!(r);
     }
     if let Some(p) = https_art(m.get("poster")) {
-        it["art"] = json!({ "poster": p });
+        it["art"] = json!({ "poster": p, "backdrop": https_art(m.get("background")) });
+    }
+    // Shown on the player's ⓘ card for whatever is played from this title.
+    if let Some(d) = m.get("description").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+        it["description"] = json!(d);
+    }
+    let rating = m.get("imdbRating").and_then(Value::as_str).filter(|r| !r.is_empty()).map(|r| format!("★ {r}"));
+    let genres = m.get("genres").or_else(|| m.get("genre")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).take(3).map(str::to_string);
+    let badges: Vec<String> = rating.into_iter().chain(genres).collect();
+    if !badges.is_empty() {
+        it["badges"] = json!(badges);
     }
     Some(it)
 }
@@ -393,7 +403,8 @@ mod tests {
     #[test]
     fn catalog_items() {
         let body = json!({ "metas": [
-            { "id": "tt0111161", "type": "movie", "name": "The Shawshank Redemption", "poster": "https://img/p.jpg", "releaseInfo": "1994" },
+            { "id": "tt0111161", "type": "movie", "name": "The Shawshank Redemption", "poster": "https://img/p.jpg", "releaseInfo": "1994",
+              "description": "Two imprisoned men bond.", "imdbRating": "9.3", "genres": ["Drama", "Crime"], "background": "file:///x" },
             { "id": "tt0944947", "type": "series", "name": "Game of Thrones", "poster": "file:///x" },
             { "type": "movie", "name": "no id" }
         ]});
@@ -402,6 +413,9 @@ mod tests {
         assert_eq!(items[0]["route"], "streams:movie:tt0111161");
         assert_eq!(items[0]["art"]["poster"], "https://img/p.jpg");
         assert_eq!(items[0]["subtitle"], "1994");
+        assert_eq!(items[0]["description"], "Two imprisoned men bond.");
+        assert_eq!(items[0]["badges"], json!(["★ 9.3", "Drama", "Crime"]));
+        assert_eq!(items[0]["art"]["backdrop"], Value::Null, "non-http background dropped");
         assert_eq!(items[1]["route"], "meta:series:tt0944947");
         assert!(items[1].get("art").is_none(), "non-http poster dropped");
     }

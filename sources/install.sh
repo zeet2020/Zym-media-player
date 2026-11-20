@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a source plugin and install it into Zym Player's sources folder.
+# Build a content plugin and install it into Zym Media Player's sources folder.
 # Usage: sources/install.sh sources/<plugin-dir>
 set -euo pipefail
 cd "${1:?usage: install.sh <plugin-dir>}"

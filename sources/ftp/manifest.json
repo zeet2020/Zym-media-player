@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "api": 1,
   "description": "Browse and play media from an FTP or SFTP server (NAS, seedbox, home server).",
-  "author": "Zym Player",
+  "author": "Zym Media Player",
   "capabilities": ["browse"],
   "hosts": ["*"],
   "settings": [

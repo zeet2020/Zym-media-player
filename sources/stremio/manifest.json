@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "api": 1,
   "description": "Browse catalogs and play streams from Stremio addons (Cinemeta, your debrid-enabled stream addons, …).",
-  "author": "Zym Player",
+  "author": "Zym Media Player",
   "capabilities": ["browse", "search"],
   "hosts": ["*"],
   "settings": [

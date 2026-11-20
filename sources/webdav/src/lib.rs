@@ -1,4 +1,4 @@
-//! Zym Player source plugin: browse a WebDAV server, play media files. Spec: docs/plugins.md (api 1).
+//! Zym Media Player content plugin: browse a WebDAV server, play media files. Spec: docs/plugins.md (api 1).
 //! Folders come from `PROPFIND Depth: 1`; playback passes the same Basic auth header to the player.
 
 use quick_xml::Reader;

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "api": 1,
   "description": "Live TV channels from any M3U/M3U8 playlist URL. Groups become folders.",
-  "author": "Zym Player",
+  "author": "Zym Media Player",
   "icon": "icon.png",
   "capabilities": [
     "browse",

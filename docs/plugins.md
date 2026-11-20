@@ -1,4 +1,4 @@
-# Zym Player — Source Plugin API (v1)
+# Zym Media Player — Content Plugin API (v1)
 
 Status: **draft**, `api: 1`. Machine-readable schema: [`schema/source-v1.schema.json`](schema/source-v1.schema.json).
 
@@ -7,9 +7,9 @@ Zym has two kinds of plugins:
 | Kind | What it is | Runs as | Purpose |
 |---|---|---|---|
 | **Script** | mpv Lua/JS script | inside mpv | Playback hooks: OSD, key bindings, auto-skip, etc. (already supported) |
-| **Source** | WebAssembly module (this document) | sandboxed, [Extism](https://extism.org) | Feeds content to the **Explorer**: catalogs, channels, search, playable links |
+| **Content** | WebAssembly module (this document) | sandboxed, [Extism](https://extism.org) | Feeds content to the **Explorer**: catalogs, channels, search, playable links |
 
-The player never talks to Stremio, IPTV providers, debrid services, etc. itself. A Source plugin does
+The player never talks to Stremio, IPTV providers, debrid services, etc. itself. A content plugin does
 that and hands the player content in the format below. The player only browses, displays and plays.
 
 ---
@@ -67,7 +67,7 @@ Every function takes a JSON string and returns a JSON string (Extism `input`/`ou
 
 | Export | Input | Output | When |
 |---|---|---|---|
-| `home` | `{}` | `Page` | User opens the source. If it returns `next`, more items load via `browse({"route": "", "cursor": next})` — the empty route means "home". |
+| `home` | `{}` | `Page` | User opens the plugin. If it returns `next`, more items load via `browse({"route": "", "cursor": next})` — the empty route means "home". |
 | `browse` | `{ "route": string, "cursor"?: string }` | `Page` | User opens a folder/show/season, or scrolls for more |
 | `search` | `{ "query": string, "cursor"?: string }` | `Page` | User searches (only if `"search"` capability) |
 | `resolve` | `{ "id": string }` | `Playback` | User plays an item — resolve links **late** (tokens expire) |
@@ -137,7 +137,14 @@ Rules:
   "title": "The Example (1994)",                  // optional override for the title bar
   "headers": { "User-Agent": "…", "Referer": "…" },
   "subtitles": [ { "url": "https://…/en.srt", "lang": "en", "label": "English" } ],
-  "start": 0                                      // seconds; resume position
+  "start": 0,                                     // seconds; resume position
+  "info": {                                       // optional: the ⓘ card on the video
+    "title": "The Example", "subtitle": "1994 · Drama",
+    "description": "…",                           // ≤ 4000 chars shown
+    "poster": "https://…", "backdrop": "https://…", // same rules as Item art
+    "badges": ["★ 8.1", "1080p"],                 // ≤ 8
+    "details": [ { "label": "Director", "value": "…" } ]  // ≤ 20
+  }
 }
 ```
 
@@ -149,6 +156,13 @@ forwarded). Plugins cannot pass arbitrary mpv options — some can load scripts 
 - `headers`: names are RFC 7230 tokens, values contain no CR/LF. **Player requirement:** headers are passed
   to mpv as a string-list *property* (`http-header-fields`) via the property API, never by joining text into
   an option string — a value like `x,script=/tmp/a.lua` must stay one literal header value.
+
+**`info`** fills the ⓘ card the player shows at the top right of the video while this stream plays.
+It's display-only text and images; nothing in it reaches mpv. When a plugin omits it, the player builds
+the card from the item that was played: its `title`, `subtitle`, `description`, art and `badges`. For a
+`stream` item (one of several choices on a title's page) the card describes the item whose `route` opened
+that page, with the stream listed under "Source". So filling `description` and `art.poster` on catalog
+items is usually enough.
 
 ## 5. Gallery index
 

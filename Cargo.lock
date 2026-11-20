@@ -9831,8 +9831,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "zym-player"
-version = "0.1.0"
+name = "zym-media-player"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "extism",

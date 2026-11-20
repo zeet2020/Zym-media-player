@@ -1,4 +1,4 @@
-//! Zym Player source plugin: FTP / SFTP. Spec: docs/plugins.md (api 1).
+//! Zym Media Player content plugin: FTP / SFTP. Spec: docs/plugins.md (api 1).
 //! Sandboxed plugins have no sockets, so folder listing goes through the player's `zym_list_dir`
 //! host function (which enforces this manifest's `hosts`). mpv plays ftp:// and sftp:// itself.
 

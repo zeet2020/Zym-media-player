@@ -2,7 +2,7 @@
 name = "zym-source-stremio"
 version = "0.1.0"
 edition = "2024"
-description = "Zym Player source plugin: browse and play via Stremio addons"
+description = "Zym Media Player content plugin: browse and play via Stremio addons"
 license = "GPL-3.0-or-later"
 
 [lib]

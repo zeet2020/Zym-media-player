@@ -1,18 +1,23 @@
 // No console window next to the player on Windows (logs still go to stderr when run from a terminal).
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-// Zym Player: GPUI window + libmpv software renderer.
+// Zym Media Player: GPUI window + libmpv software renderer.
 // mpv decodes and renders BGRA frames on a worker thread; GPUI shows the latest one as an image.
 
 mod explorer;
+mod infocard;
 mod menu;
+mod panel;
+mod playlists;
 mod remote;
+mod settings;
+mod textbox;
 mod sources;
 mod theme;
 
 use theme::t;
 
-pub const APP_NAME: &str = "Zym Player";
+pub const APP_NAME: &str = "Zym Media Player";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use std::borrow::Cow;
@@ -28,12 +33,47 @@ use gpui::{
     px, relative, rgb, rgba, size, svg,
 };
 use image::{Frame, ImageBuffer};
-use explorer::{Explorer, Field};
-use menu::{Item, MenuState, choice, mpv as mcmd, sub, ui};
+use explorer::Explorer;
+use textbox::Field;
+use menu::{Item, MenuState, mpv as mcmd, sub, ui};
 use libmpv2_sys::*;
 
 // ---- debug watchdog (ZYM_DEBUG): which sync mpv call, if any, the UI thread is stuck in.
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
+/// Properties the UI reads every frame. mpv_get_property waits for mpv's core, which is often busy
+/// (opening a stream, switching YouTube formats): 100-300 ms UI freezes, Explorer included. The event
+/// thread observes these instead and keeps the latest value here; reads never block.
+const OBSERVED: [&str; 11] = ["time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist"];
+static CACHE: Mutex<std::collections::BTreeMap<&'static str, String>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// lavfi filter for a clockwise rotation in degrees ("" = none). The sw renderer can't rotate.
+fn rotation_filter(degrees: i64) -> &'static str {
+    match degrees.rem_euclid(360) {
+        90 => "transpose=clock",
+        180 => "hflip,vflip",
+        270 => "transpose=cclock",
+        _ => "",
+    }
+}
+
+fn parse_playlist(json: &str) -> Vec<(String, String)> {
+    let v: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+    v.iter()
+        .map(|e| {
+            let s = |k: &str| e.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            (s("filename"), s("title"))
+        })
+        .collect()
+}
+
+/// Some(value) for an observed property (None inside = currently unavailable); None = not observed.
+fn cached(name: &str) -> Option<Option<String>> {
+    let key = OBSERVED.iter().find(|k| **k == name)?;
+    Some(CACHE.lock().unwrap().get(key).cloned())
+}
+/// Rotation picked in Quick Settings (degrees); kept across files like mpv's own option was.
+static USER_ROTATE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static IN_FLIGHT: Mutex<String> = Mutex::new(String::new());
 
 struct InFlight;
@@ -90,6 +130,8 @@ pub struct Mpv(*mut mpv_handle, Mutex<AfterLoad>);
 pub struct AfterLoad {
     subs: Vec<String>,
     start: Option<f64>,
+    /// Jump to this playlist index once the (expanded) playlist starts.
+    jump: Option<i64>,
 }
 unsafe impl Send for Mpv {}
 unsafe impl Sync for Mpv {}
@@ -101,32 +143,35 @@ impl Mpv {
             assert!(!h.is_null(), "mpv_create failed");
             let mpv = Arc::new(Mpv(h, Mutex::default()));
             mpv.opt("vo", "libmpv");
-            // Decode on GPU, copy back for the sw renderer. "-safe" = only mpv's whitelisted decoders:
-            // plain auto-copy picked Vulkan here and hit VK_ERROR_DEVICE_LOST before a crash.
-            mpv.opt("hwdec", "auto-copy-safe");
+            // Decode on GPU, copy back for the sw renderer (Settings › Player can turn it off).
+            mpv.opt("hwdec", settings::hwdec_value(settings::player_prefs().hwdec));
             mpv.opt("keep-open", "yes"); // advance through playlist, hold last frame at the end
             mpv.opt("idle", "yes"); // stay alive with an empty playlist (drop files later)
             mpv.opt("screenshot-dir", "~/Pictures"); // mpv expands ~ on every OS
+            // The sw renderer can't rotate: mpv still hands it rotated crop rects and aborts
+            // (mp_image_crop assertion). Rotation is done by a video filter instead, see set_rotation.
+            mpv.opt("video-rotate", "no");
             assert!(mpv_initialize(h) >= 0, "mpv_initialize failed");
             mpv
         }
     }
 
-    /// Plugins = mpv Lua/JS scripts (files or dirs with main.lua) in the plugins dir.
+    /// Plugins = mpv Lua/JS scripts in the plugins dir, minus those disabled in Settings.
     fn load_plugins(&self) {
-        let dir = plugins_dir();
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
-        for e in entries.flatten() {
-            let p = e.path();
-            let is_script = p.is_dir() || matches!(p.extension().and_then(|x| x.to_str()), Some("lua" | "js"));
-            if is_script {
-                eprintln!("plugin: {}", p.display());
-                self.cmd(&["load-script", &p.to_string_lossy()]);
+        let off = settings::disabled("scripts");
+        for p in settings::scripts() {
+            if p.file_name().is_some_and(|n| off.iter().any(|o| *o == *n.to_string_lossy())) {
+                continue;
             }
+            eprintln!("plugin: {}", p.display());
+            self.cmd(&["load-script", &p.to_string_lossy()]);
         }
     }
 
     fn get_i64(&self, name: &str) -> Option<i64> {
+        if let Some(v) = cached(name) {
+            return v.and_then(|s| s.parse().ok());
+        }
         let _g = InFlight::new(name);
         let n = CString::new(name).unwrap();
         let mut out = 0i64;
@@ -137,6 +182,9 @@ impl Mpv {
     }
 
     fn get_string(&self, name: &str) -> Option<String> {
+        if let Some(v) = cached(name) {
+            return v;
+        }
         let _g = InFlight::new(name);
         let n = CString::new(name).unwrap();
         unsafe {
@@ -153,6 +201,36 @@ impl Mpv {
     fn opt(&self, k: &str, v: &str) {
         let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap());
         unsafe { mpv_set_option_string(self.0, k.as_ptr(), v.as_ptr()) };
+    }
+
+    /// Rotate by a `transpose` filter: user rotation plus the file's rotation metadata (phone videos).
+    /// The filter changes dwidth/dheight, so the renderer gets the rotated size.
+    pub fn set_rotation(&self, user: i64) {
+        USER_ROTATE.store(user, Ordering::Relaxed);
+        self.apply_rotation();
+    }
+
+    fn apply_rotation(&self) {
+        let meta = self.get_i64("current-tracks/video/demux-rotation").unwrap_or(0);
+        let f = rotation_filter(meta + USER_ROTATE.load(Ordering::Relaxed));
+        if self.get_string("vf").is_some_and(|v| v.contains("zymrot")) {
+            self.cmd(&["vf", "remove", "@zymrot"]);
+        }
+        if !f.is_empty() {
+            self.cmd(&["vf", "add", &format!("@zymrot:lavfi=[{f}]")]);
+        }
+    }
+
+    /// (filename, title) per entry, from the observed `playlist` (mpv sends it as JSON). Parsed
+    /// once per change: several widgets ask every frame.
+    pub fn playlist_entries(&self) -> Vec<(String, String)> {
+        static PARSED: Mutex<(String, Vec<(String, String)>)> = Mutex::new((String::new(), Vec::new()));
+        let json = self.get_string("playlist").unwrap_or_default();
+        let mut cache = PARSED.lock().unwrap();
+        if cache.0 != json {
+            *cache = (json.clone(), parse_playlist(&json));
+        }
+        cache.1.clone()
     }
 
     pub fn cmd(&self, args: &[&str]) {
@@ -201,6 +279,14 @@ impl Mpv {
         self.cmd(&["loadfile", target, mode]);
     }
 
+    /// Replace the queue with a playlist file and start at entry `index`. mpv expands the .m3u on
+    /// load, so the jump happens when its first entry is loaded (it may flash for a moment).
+    pub fn load_from(&self, playlist: &str, index: i64) {
+        self.reset_stream_opts();
+        self.1.lock().unwrap().jump = Some(index);
+        self.cmd(&["loadfile", playlist, "replace"]);
+    }
+
     /// Play a stream resolved by a source plugin. Only validated fields reach mpv, all via properties.
     pub fn play_stream(&self, pb: &sources::Playback) {
         self.reset_stream_opts();
@@ -216,7 +302,7 @@ impl Mpv {
         if let Some(t) = &pb.title {
             self.set_str("force-media-title", t);
         }
-        *self.1.lock().unwrap() = AfterLoad { subs: pb.subtitles.iter().map(|s| s.url.clone()).collect(), start: pb.start };
+        *self.1.lock().unwrap() = AfterLoad { subs: pb.subtitles.iter().map(|s| s.url.clone()).collect(), start: pb.start, jump: None };
         self.cmd(&["loadfile", &pb.url, "replace"]);
         self.cmd(&["set", "pause", "no"]);
     }
@@ -261,6 +347,9 @@ impl Mpv {
     }
 
     fn get_f64(&self, name: &str) -> Option<f64> {
+        if let Some(v) = cached(name) {
+            return v.and_then(|s| s.parse().ok());
+        }
         let _g = InFlight::new(name);
         let n = CString::new(name).unwrap();
         let mut out = 0f64;
@@ -271,6 +360,9 @@ impl Mpv {
     }
 
     fn get_flag(&self, name: &str) -> bool {
+        if let Some(v) = cached(name) {
+            return v.as_deref() == Some("yes");
+        }
         let _g = InFlight::new(name);
         let n = CString::new(name).unwrap();
         let mut out: i32 = 0;
@@ -285,13 +377,20 @@ impl Drop for Mpv {
     }
 }
 
-/// <config>/zym-player/plugins — %APPDATA% on Windows, $XDG_CONFIG_HOME or ~/.config elsewhere.
-pub fn plugins_dir() -> std::path::PathBuf {
+/// <config>/zym-player — %APPDATA% on Windows, $XDG_CONFIG_HOME or ~/.config elsewhere. Settings,
+/// playlists, scripts and plugins live here. Deliberately still "zym-player" after the binary
+/// became zym-media-player, so existing users keep everything.
+pub fn config_dir() -> std::path::PathBuf {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(Into::into)
         .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("zym-player").join("plugins")
+    base.join("zym-player")
+}
+
+/// <config>/zym-player/plugins: mpv scripts.
+pub fn plugins_dir() -> std::path::PathBuf {
+    config_dir().join("plugins")
 }
 
 /// Window size in physical pixels (w << 32 | h), written by the UI tick. The render thread fits the
@@ -336,6 +435,10 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
         mpv_request_log_messages(mpv.0, level.as_ptr());
         mpv_observe_property(mpv.0, 0, c"dwidth".as_ptr(), mpv_format_MPV_FORMAT_INT64);
         mpv_observe_property(mpv.0, 0, c"dheight".as_ptr(), mpv_format_MPV_FORMAT_INT64);
+        for name in OBSERVED {
+            let n = CString::new(name).unwrap();
+            mpv_observe_property(mpv.0, 0, n.as_ptr(), mpv_format_MPV_FORMAT_STRING);
+        }
     }
     std::thread::spawn(move || unsafe {
         let (mut w, mut h) = (0u64, 0u64);
@@ -356,6 +459,10 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
                     if let Some(t) = after.start.filter(|t| *t > 0.0) {
                         mpv.cmd(&["seek", &t.to_string(), "absolute"]);
                     }
+                    if let Some(i) = after.jump.filter(|i| *i > 0) {
+                        mpv.cmd(&["playlist-play-index", &i.to_string()]);
+                    }
+                    mpv.apply_rotation(); // this file's rotation metadata may differ
                 }
                 mpv_event_id_MPV_EVENT_END_FILE => {
                     let e = &*(ev.data as *const mpv_event_end_file);
@@ -365,6 +472,17 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
                 }
                 mpv_event_id_MPV_EVENT_PROPERTY_CHANGE => {
                     let p = &*(ev.data as *const mpv_event_property);
+                    let name = std::ffi::CStr::from_ptr(p.name).to_string_lossy();
+                    if let Some(key) = OBSERVED.iter().find(|k| **k == name) {
+                        let mut cache = CACHE.lock().unwrap();
+                        if p.format == mpv_format_MPV_FORMAT_STRING {
+                            let s = std::ffi::CStr::from_ptr(*(p.data as *const *const std::ffi::c_char));
+                            cache.insert(key, s.to_string_lossy().into_owned());
+                        } else {
+                            cache.remove(key); // unavailable (e.g. no file loaded)
+                        }
+                        continue;
+                    }
                     let v = if p.format == mpv_format_MPV_FORMAT_INT64 { *(p.data as *const i64) as u64 } else { 0 };
                     match std::ffi::CStr::from_ptr(p.name).to_bytes() {
                         b"dwidth" => w = v,
@@ -466,6 +584,20 @@ pub struct Player {
     ui_alpha: f32,
     last_frame: Instant,
     pub explorer: Explorer,
+    pub settings: Option<settings::SettingsPanel>,
+    pub pl: playlists::PlaylistUi,
+    /// Caret + selection of the focused text box (see textbox.rs).
+    pub caret: Option<textbox::Cursor>,
+    /// A text box is being drag-selected.
+    pub text_drag: bool,
+    /// Big panel width set by dragging its edge (None = default), and a drag in progress.
+    pub panel_w: Option<f32>,
+    pub panel_drag: bool,
+    /// Details cards from content plugins, by stream URL (= mpv playlist filename).
+    pub infos: std::collections::HashMap<String, sources::Info>,
+    pub info_open: bool,
+    /// Per text box (by field): text start x, font and size from the last paint, for click-to-caret.
+    pub text_geo: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, (gpui::Pixels, gpui::Font, gpui::Pixels)>>>,
     /// Text box with keyboard focus (search, add-URL, settings form).
     pub editing: Option<Field>,
     pub add_url: String,
@@ -498,7 +630,6 @@ enum Pop {
     Video,
     Picture,
     Sync,
-    Appearance,
 }
 
 /// A draggable slider bound to a numeric mpv property.
@@ -568,7 +699,7 @@ impl Player {
 
         let focus = cx.focus_handle();
         window.focus(&focus);
-        let mut player = Self {
+        let player = Self {
             mpv,
             latest,
             frame: None,
@@ -577,7 +708,7 @@ impl Player {
             last_move: Instant::now(),
             seek_hover: None,
             dragging: false,
-            panel: if files.len() != 1 { Panel::Playlist } else { Panel::None },
+            panel: if files.len() > 1 { Panel::Playlist } else { Panel::None }, // empty start: nothing open
             menu: None,
             about: false,
             pop: None,
@@ -585,6 +716,15 @@ impl Player {
             ui_alpha: 1.0,
             last_frame: Instant::now(),
             explorer: Explorer::new(),
+            settings: None,
+            pl: Default::default(),
+            caret: None,
+            text_drag: false,
+            panel_w: settings::get("ui").and_then(|u| u.get("panel_width")?.as_f64()).map(|w| w as f32),
+            panel_drag: false,
+            infos: Default::default(),
+            info_open: false,
+            text_geo: Default::default(),
             editing: None,
             add_url: String::new(),
             add_popup: false,
@@ -622,8 +762,9 @@ impl Player {
                 window.drop_image(old).ok(); // stopped: don't leave the last frame on screen
             }
         }
-        let title: SharedString = if self.mpv.get_flag("idle-active") {
-            APP_NAME.into() // stopped/empty: never show a stale title
+        // Stopped/empty, or the last item finished (keep-open holds its final frame): no stale title.
+        let title: SharedString = if self.mpv.get_flag("idle-active") || self.mpv.get_flag("eof-reached") {
+            APP_NAME.into()
         } else {
             self.mpv.get_string("media-title").unwrap_or_else(|| APP_NAME.into()).into()
         };
@@ -634,20 +775,14 @@ impl Player {
         cx.notify(); // also refreshes time readout + auto-hide
     }
 
-    /// (filename, is_current) for each playlist entry.
-    // ponytail: re-reads the whole playlist every frame; cache on `playlist` change events if lists get huge.
+    /// (display name, is_current) for each playlist entry.
     fn playlist(&self) -> Vec<(String, bool)> {
-        let n = self.mpv.get_i64("playlist-count").unwrap_or(0);
         let cur = self.mpv.get_i64("playlist-pos").unwrap_or(-1);
-        (0..n)
-            .map(|i| {
-                let title = self.mpv.get_string(&format!("playlist/{i}/title")).filter(|t| !t.is_empty());
-                let name = title.unwrap_or_else(|| {
-                    let f = self.mpv.get_string(&format!("playlist/{i}/filename")).unwrap_or_default();
-                    std::path::Path::new(&f).file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or(f)
-                });
-                (name, i == cur)
-            })
+        self.mpv
+            .playlist_entries()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (file, title))| (playlists::display_name(&(title, file)), i as i64 == cur))
             .collect()
     }
 
@@ -669,43 +804,44 @@ impl Player {
                 "escape" => {
                     self.editing = None;
                     self.add_popup = false;
+                    self.menu = None;
                 }
                 "enter" => self.submit_field(f, cx),
-                "backspace" => {
-                    self.field_text(&f).map(String::pop);
+                "v" if !plain => self.paste_into(&f, cx),
+                "c" if !plain => self.copy_selection(&f, false, cx),
+                "x" if !plain => self.copy_selection(&f, true, cx),
+                "a" if !plain => {
+                    self.field_edit(&f, "all", false, None);
                 }
-                "v" if !plain => {
-                    let paste = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
-                    if let Some(t) = self.field_text(&f) {
-                        t.push_str(paste.lines().next().unwrap_or("").trim());
-                    }
+                k @ ("left" | "right" | "home" | "end" | "backspace" | "delete") => {
+                    self.field_edit(&f, k, ks.modifiers.shift, None);
                 }
                 _ => {
                     if let (true, Some(c)) = (plain, ks.key_char.clone()) {
-                        if let Some(t) = self.field_text(&f) {
-                            t.push_str(&c);
-                        }
+                        self.field_edit(&f, "", false, Some(&c));
                     }
                 }
             }
             cx.notify();
             return;
         }
-        if ks.key == "escape" && self.explorer.open && self.menu.is_none() && !self.about {
-            return self.toggle_explorer(cx);
-        }
-        let m = &self.mpv;
-        if ks.key == "escape" && (self.menu.is_some() || self.about || self.pop.is_some()) {
+        if ks.key == "escape" && (self.menu.is_some() || self.about) {
             self.menu = None;
             self.about = false;
-            self.pop = None;
             return;
         }
+        if ks.key == "escape" && self.any_overlay() {
+            return self.close_overlays();
+        }
+        let m = &self.mpv;
         if ks.modifiers.control && ks.key == "o" {
             return self.open_dialog(OpenKind::Media, cx);
         }
         if ks.modifiers.control && ks.key == "l" {
             return self.open_url_box();
+        }
+        if ks.modifiers.control && ks.key == "," {
+            return self.toggle_settings();
         }
         match ks.key.as_str() {
             "space" | "k" => return self.play_pause(),
@@ -734,10 +870,29 @@ impl Player {
 }
 
 impl Player {
+    /// One overlay at a time: every panel/popover opener calls this first, so a new overlay type
+    /// only has to be added here.
+    /// Any panel/popover/card open (what Esc and a click on the video close first).
+    pub fn any_overlay(&self) -> bool {
+        self.panel != Panel::None || self.explorer.open || self.settings.is_some() || self.pl.open || self.pop.is_some() || self.add_popup || self.info_open
+    }
+
+    pub fn close_overlays(&mut self) {
+        self.panel = Panel::None;
+        self.explorer.open = false;
+        self.settings = None;
+        self.pl.open = false;
+        self.pop = None;
+        self.add_popup = false;
+        self.info_open = false;
+        self.editing = None;
+    }
+
     fn toggle_panel(&mut self, p: Panel) {
-        self.panel = if self.panel == p { Panel::None } else { p };
-        if self.panel != Panel::None {
-            self.explorer.open = false; // one right-side panel at a time
+        let open = self.panel != p;
+        self.close_overlays();
+        if open {
+            self.panel = p;
         }
     }
 
@@ -761,7 +916,7 @@ impl Player {
 
     /// Playlist + its "+" popup with the URL box focused.
     fn open_url_box(&mut self) {
-        self.explorer.open = false;
+        self.close_overlays();
         self.panel = Panel::Playlist;
         self.add_popup = true;
         self.editing = Some(Field::AddUrl);
@@ -787,7 +942,11 @@ impl Player {
     }
 
     fn toggle_pop(&mut self) {
-        self.pop = if self.pop.is_some() { None } else { Some(Pop::Main) };
+        let open = self.pop.is_none();
+        self.close_overlays();
+        if open {
+            self.pop = Some(Pop::Main);
+        }
     }
 
     /// Window x -> slider value. Popover is pinned PAD from the right edge, so geometry is fixed.
@@ -915,17 +1074,7 @@ impl Player {
     fn toggle_row(&self, label: &str, on: bool, cmd: Vec<String>, cx: &mut Context<Self>) -> Stateful<Div> {
         Self::pop_row(format!("tg-{label}"))
             .child(div().flex_1().child(label.to_string()))
-            .child(
-                div()
-                    .w(px(32.))
-                    .h(px(18.))
-                    .p(px(2.))
-                    .rounded_full()
-                    .bg(if on { t().accent() } else { t().dim() })
-                    .flex()
-                    .when(on, |d| d.justify_end())
-                    .child(div().size(px(14.)).rounded_full().bg(rgb(0xffffff))),
-            )
+            .child(switch(on))
             .on_click(cx.listener(move |this, _, _, _| this.mpv.cmd(&cmd.iter().map(String::as_str).collect::<Vec<_>>())))
     }
 
@@ -959,12 +1108,6 @@ impl Player {
                         Pop::Sync,
                         cx,
                     ))
-                    .child({
-                        let p = theme::prefs();
-                        let mode = match p.mode { theme::Mode::System => "System", theme::Mode::Dark => "Dark", theme::Mode::Light => "Light" };
-                        let accent = theme::ACCENTS.iter().find(|a| a.1 == p.accent).map_or("Custom", |a| a.0);
-                        self.nav_row("Appearance", format!("{mode} · {accent}"), Pop::Appearance, cx)
-                    })
             }
             Pop::Speed => body
                 .child(self.pop_header("Speed", cx))
@@ -1001,7 +1144,7 @@ impl Player {
                     .child(self.toggle_row("Mute", m.get_flag("mute"), v(&["cycle", "mute"]), cx))
             }
             Pop::Video => {
-                let rotate = m.get_i64("video-rotate").unwrap_or(0);
+                let rotate = USER_ROTATE.load(Ordering::Relaxed);
                 let hw_on = m.get_string("hwdec").unwrap_or_default() != "no";
                 let hw = m.get_string("hwdec-current").filter(|h| h != "no").unwrap_or_else(|| "software".into());
                 body.child(self.pop_header("Video", cx))
@@ -1017,11 +1160,16 @@ impl Player {
                             .child(div().flex_1().child("Rotate"))
                             .children([0, 90, 180, 270].map(|r| {
                                 chip(SharedString::from(format!("rot-{r}")), format!("{r}°"), rotate == r)
-                                    .on_click(cx.listener(move |this, _, _, _| this.mpv.cmd(&["set", "video-rotate", &r.to_string()])))
+                                    .on_click(cx.listener(move |this, _, _, _| this.mpv.set_rotation(r)))
                             })),
                     )
                     .child(self.toggle_row("Deinterlace", m.get_flag("deinterlace"), v(&["cycle", "deinterlace"]), cx))
-                    .child(self.toggle_row("Hardware decoding", hw_on, v(&["set", "hwdec", if hw_on { "no" } else { "auto-copy-safe" }]), cx))
+                    .child(
+                        Self::pop_row("tg-hwdec")
+                            .child(div().flex_1().child("Hardware decoding"))
+                            .child(switch(hw_on))
+                            .on_click(cx.listener(move |this, _, _, _| this.set_hwdec(!hw_on))),
+                    )
                     .child(Self::pop_note(&format!("Decoder: {hw}")))
             }
             Pop::Picture => body
@@ -1043,41 +1191,6 @@ impl Player {
                 .child(self.slider_row(AUDIO_DELAY, cx))
                 .child(self.slider_row(SUB_DELAY, cx))
                 .child(Self::pop_note("Positive = later. Click a value to reset.")),
-            Pop::Appearance => {
-                let p = theme::prefs();
-                body.child(self.pop_header("Appearance", cx))
-                    .child(Self::pop_note("THEME"))
-                    .children([("System", theme::Mode::System), ("Dark", theme::Mode::Dark), ("Light", theme::Mode::Light)].map(|(label, mode)| {
-                        Self::pop_row(format!("mode-{label}"))
-                            .child(div().w(px(16.)).text_color(t().accent()).child(if p.mode == mode { "✓" } else { "" }))
-                            .child(div().flex_1().child(label))
-                            .on_click(cx.listener(move |_, _, window, cx| {
-                                theme::set(theme::Prefs { mode, ..theme::prefs() });
-                                theme::resolve(window.appearance());
-                                cx.notify();
-                            }))
-                    }))
-                    .child(Self::pop_note("ACCENT"))
-                    .child(
-                        div().flex().flex_wrap().gap_2().px(px(POP_INSET)).py_2().children(theme::ACCENTS.map(|(name, color)| {
-                            let selected = p.accent == color;
-                            div()
-                                .id(SharedString::from(format!("accent-{name}")))
-                                .size(px(26.))
-                                .rounded_full()
-                                .bg(rgb(color))
-                                .cursor_pointer()
-                                .border_2()
-                                .border_color(if selected { t().fg() } else { gpui::transparent_black().into() })
-                                .hover(|s| s.opacity(0.85))
-                                .on_click(cx.listener(move |_, _, window, cx| {
-                                    theme::set(theme::Prefs { accent: color, ..theme::prefs() });
-                                    theme::resolve(window.appearance());
-                                    cx.notify();
-                                }))
-                        })),
-                    )
-            }
         };
 
         div()
@@ -1096,6 +1209,7 @@ impl Player {
             .shadow_lg()
             .text_sm()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()) // don't reach the video
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(body)
     }
 
@@ -1168,24 +1282,6 @@ impl Player {
     fn build_menu(&self, window: &Window) -> Vec<Item> {
         let m = &self.mpv;
         let s = |p: &str| m.get_string(p).unwrap_or_default();
-        let track_items = |kind: &str, prop: &str, with_off: bool| {
-            let tracks = self.tracks(kind);
-            let mut items: Vec<Item> = Vec::new();
-            if with_off {
-                items.push(mcmd("Off", &["set", prop, "no"]).checked(!tracks.iter().any(|t| t.2)));
-            }
-            if tracks.is_empty() && !with_off {
-                items.push(ui("No tracks", |_, _, _| {}));
-            }
-            items.extend(tracks.into_iter().map(|(id, label, sel)| mcmd(label, &["set", prop, &id.to_string()]).checked(sel)));
-            items
-        };
-
-        let speed = m.get_f64("speed").unwrap_or(1.0);
-        let speeds: Vec<Item> = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-            .map(|v| mcmd(if v == 1.0 { "Normal".to_string() } else { format!("{v}×") }, &["set", "speed", &v.to_string()]).checked((speed - v).abs() < 0.001))
-            .into();
-
         let loop_file = s("loop-file") != "no";
         let loop_pl = s("loop-playlist") != "no";
         let ab_label = match (s("ab-loop-a") != "no", s("ab-loop-b") != "no") {
@@ -1203,18 +1299,12 @@ impl Player {
             })
             .collect();
 
-        let aspect = s("video-aspect-override");
-        let aspect = if aspect.starts_with('-') || aspect.is_empty() { "no".to_string() } else { aspect };
-        let rotate = m.get_i64("video-rotate").unwrap_or(0).to_string();
-        let hwdec_on = s("hwdec") != "no";
-
         let mut playback = vec![
             ui(if m.get_flag("pause") || m.get_flag("idle-active") { "Play" } else { "Pause" }, |p, _, _| p.play_pause()).hint("Space"),
             ui("Stop", |p, _, _| p.stop()),
             mcmd("Previous", &["playlist-prev"]).hint("B"),
             mcmd("Next", &["playlist-next"]).hint("N"),
             Item::Sep,
-            sub("Speed", speeds),
             sub("Loop", vec![
                 ui("Off", |p, _, _| { p.mpv.cmd(&["set", "loop-file", "no"]); p.mpv.cmd(&["set", "loop-playlist", "no"]); }).checked(!loop_file && !loop_pl),
                 ui("Current File", |p, _, _| p.mpv.cmd(&["set", "loop-file", "inf"])).checked(loop_file),
@@ -1236,46 +1326,28 @@ impl Player {
             ui("Open Folder…", |p, _, cx| p.open_dialog(OpenKind::Folder, cx)),
             ui("Open URL…", |p, _, _| p.open_url_box()).hint("Ctrl+L"),
             ui("Explorer", |p, _, cx| p.toggle_explorer(cx)).hint("E").checked(self.explorer.open),
+            ui("Playlist", |p, _, _| p.toggle_panel(Panel::Playlist)).hint("P").checked(self.panel == Panel::Playlist),
+            ui("Manage Playlists…", |p, _, _| p.open_playlists()).checked(self.pl.open),
             Item::Sep,
             sub("Playback", playback),
-            sub("Audio", vec![
-                sub("Audio Track", track_items("audio", "aid", false)),
-                Item::Sep,
-                mcmd("Mute", &["cycle", "mute"]).hint("M").checked(m.get_flag("mute")),
-                mcmd("Volume Up", &["add", "volume", "5"]).hint("↑"),
-                mcmd("Volume Down", &["add", "volume", "-5"]).hint("↓"),
-                mcmd("Normalize Loudness", &["af", "toggle", "@norm:lavfi=[loudnorm]"]).checked(s("af").contains("loudnorm")),
-                Item::Sep,
-                ui("Audio Delay…", |p, _, _| p.pop = Some(Pop::Sync)),
-            ]),
-            sub("Video", vec![
-                choice("Aspect Ratio", "video-aspect-override", &aspect, &[("Default", "no"), ("16:9", "16:9"), ("4:3", "4:3"), ("21:9", "2.35:1"), ("1:1", "1:1")]),
-                choice("Rotate", "video-rotate", &rotate, &[("0°", "0"), ("90°", "90"), ("180°", "180"), ("270°", "270")]),
-                mcmd("Deinterlace", &["cycle", "deinterlace"]).checked(m.get_flag("deinterlace")),
-                ui("Hardware Decoding", move |p, _, _| p.mpv.cmd(&["set", "hwdec", if hwdec_on { "no" } else { "auto-copy-safe" }])).checked(hwdec_on),
-                Item::Sep,
-                ui("Fullscreen", |_, w, _| w.toggle_fullscreen()).hint("F").checked(window.is_fullscreen()),
-                ui("Picture & Zoom…", |p, _, _| p.pop = Some(Pop::Picture)),
-            ]),
-            sub("Subtitles", vec![
-                sub("Subtitle Track", track_items("sub", "sid", true)),
-                ui("Add Subtitle File…", |p, _, cx| p.open_dialog(OpenKind::Subtitle, cx)),
-                Item::Sep,
-                ui("Size & Position…", |p, _, _| p.pop = Some(Pop::Subtitles)),
-                ui("Subtitle Delay…", |p, _, _| p.pop = Some(Pop::Sync)),
-            ]),
+            // Per-video adjustments (speed, tracks, delays, picture, aspect, rotate, deinterlace,
+            // loudness) live in Quick Settings; saved preferences in Settings.
             sub("Tools", vec![
                 mcmd("Screenshot", &["screenshot"]),
                 mcmd("Screenshot (no subtitles)", &["screenshot", "video"]),
                 mcmd("Statistics Overlay", &["script-binding", "stats/display-stats-toggle"]),
                 mcmd("Shuffle Playlist", &["playlist-shuffle"]),
+                ui("Fullscreen", |_, w, _| w.toggle_fullscreen()).hint("F").checked(window.is_fullscreen()),
+                ui("Add Subtitle File…", |p, _, cx| p.open_dialog(OpenKind::Subtitle, cx)),
             ]),
             Item::Sep,
-            ui("Playlist", |p, _, _| p.toggle_panel(Panel::Playlist)).hint("P").checked(self.panel == Panel::Playlist),
             ui("Quick Settings", |p, _, _| p.toggle_pop()).hint("S").checked(self.pop.is_some()),
-            ui("Appearance…", |p, _, _| p.pop = Some(Pop::Appearance)),
+            ui("Settings", |p, _, _| p.open_settings(settings::Tab::Appearance)).hint("Ctrl+,"),
             Item::Sep,
-            ui(format!("About {APP_NAME}"), |p, _, _| p.about = true),
+            ui(format!("About {APP_NAME}"), |p, _, _| {
+                p.close_overlays();
+                p.about = true;
+            }),
             ui("Quit", |_, _, cx| cx.quit()).hint("Q"),
         ]
     }
@@ -1339,16 +1411,17 @@ pub fn icon_button(id: &'static str, label: impl Into<SharedString>) -> Stateful
 const SUB_EXTS: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
 
 /// Right-side overlay that hosts the playlist.
-fn side_panel() -> Stateful<Div> {
+fn side_panel(window: &Window) -> Stateful<Div> {
     div()
         .id("side-panel")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()) // don't reach the video
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         // Floating card: inset from the edges, soft corners, shadow.
         .absolute()
         .top(px(PANEL_V))
         .right(px(PANEL_GAP))
         .bottom(px(PANEL_V)) // equal top/bottom = vertically centred, clear of title + seek bar
-        .w(px(320.))
+        .w(panel::panel_width(window, 0., 320., 320.))
         .rounded_xl()
         .overflow_hidden()
         .shadow_lg()
@@ -1374,6 +1447,19 @@ pub fn chip(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, acti
         .text_color(if active { t().accent() } else { t().fg() })
         .hover(|s| s.bg(t().pressed()))
         .child(label.into())
+}
+
+/// On/off switch (display only; the row around it handles clicks).
+pub fn switch(on: bool) -> Div {
+    div()
+        .w(px(32.))
+        .h(px(18.))
+        .p(px(2.))
+        .rounded_full()
+        .bg(if on { t().accent() } else { t().dim() })
+        .flex()
+        .when(on, |d| d.justify_end())
+        .child(div().size(px(14.)).rounded_full().bg(rgb(0xffffff)))
 }
 
 pub fn icon(name: &str) -> gpui::Svg {
@@ -1412,12 +1498,8 @@ impl Render for Player {
             .justify_center()
             .on_click(cx.listener(|this, e: &ClickEvent, window, _| {
                 // A click outside an open popover/panel just closes it (no pause toggle), like YouTube.
-                let had_overlay = this.pop.take().is_some() | (this.panel != Panel::None) | this.explorer.open;
-                if had_overlay {
-                    this.panel = Panel::None;
-                    this.explorer.open = false;
-                    this.add_popup = false;
-                    this.editing = None;
+                if this.any_overlay() {
+                    this.close_overlays();
                     return;
                 }
                 this.play_pause();
@@ -1609,8 +1691,14 @@ impl Render for Player {
             .pt_3()
             .pb_8()
             .bg(linear_gradient(180., linear_color_stop(rgba(0x000000b0), 0.), linear_color_stop(rgba(0x00000000), 1.)))
-            .child(self.title.clone());
+            .flex()
+            .items_start()
+            .gap_2()
+            .child(div().flex_1().min_w_0().pt_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(self.title.clone()))
+            .children(self.info_button(cx));
 
+        let count = self.mpv.get_i64("playlist-count").unwrap_or(0) as usize;
+        let shown = if self.panel == Panel::Playlist { self.playlist() } else { vec![] }; // only built when visible
         let playlist = div()
             .relative()
             .size_full()
@@ -1622,7 +1710,13 @@ impl Render for Player {
                     .items_center()
                     .px_3()
                     .py_1()
-                    .child(div().flex_1().text_color(t().muted()).child("PLAYLIST"))
+                    .gap_1()
+                    .child(div().flex_1().text_color(t().muted()).child("NOW PLAYING"))
+                    .when(count > 0, |d| {
+                        d.child(chip("pl-clear", "Clear", false).on_click(cx.listener(|this, _, _, _| this.stop())))
+                    })
+                    // Saving, saved playlists and editing them: the large Playlists manager.
+                    .child(chip("pl-manage", "Manage…", false).on_click(cx.listener(|this, _, _, _| this.open_playlists())))
                     .child(
                         icon_button("pl-add", "+")
                             .text_color(t().fg())
@@ -1635,11 +1729,11 @@ impl Render for Player {
                     ),
             )
             .child(
-                div().id("pl-items").flex_1().overflow_y_scroll().children(self.playlist().into_iter().enumerate().map(
+                div().id("pl-items").flex_1().overflow_y_scroll().children(shown.into_iter().enumerate().map(
                     |(i, (name, current))| {
                         div()
                             .id(("pl-item", i))
-                            .group("item")
+                            .group("plrow")
                             .flex()
                             .items_center()
                             .gap_2()
@@ -1653,6 +1747,7 @@ impl Render for Player {
                             }))
                             .child(div().w(px(20.)).text_color(t().dim()).child(format!("{}", i + 1)))
                             .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name))
+                            .children(playlists::move_buttons("pl", i, count, cx, Player::queue_move))
                             .child(
                                 div()
                                     .id(("pl-rm", i))
@@ -1660,7 +1755,7 @@ impl Render for Player {
                                     .rounded_sm()
                                     .text_color(t().muted())
                                     .invisible()
-                                    .group_hover("item", |s| s.visible())
+                                    .group_hover("plrow", |s| s.visible())
                                     .hover(|s| s.bg(t().pressed()))
                                     .child("✕")
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1670,33 +1765,48 @@ impl Render for Player {
                             )
                     },
                 )),
-            )
-            .child(div().px_3().py_2().text_xs().text_color(t().dim()).child("+ to add a URL or files · or drop files, folders, .m3u"));
+            ).child(div().px_3().py_2().text_xs().text_color(t().dim()).child("+ to add a URL or files · or drop files, folders, .m3u"));
 
-        // "+" popup: paste a URL, or pick files/folder.
+        // "+" dialog, centered over the window: paste a URL, or pick files/folder. Backdrop click closes.
+        let add_dialog = div()
+            .id("add-backdrop")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x00000099))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _, _| {
+                this.add_popup = false;
+                this.editing = None;
+            }));
         let add_popup = div()
             .id("pl-popup")
-            .absolute()
-            .top(px(40.))
-            .left_2()
-            .right_2()
-            .p_3()
-            .rounded_lg()
+            .w(px(480.))
+            .max_w(relative(0.9))
+            .p_4()
+            .rounded_xl()
             .bg(t().surface_solid())
             .border_1()
             .border_color(t().border())
             .shadow_lg()
+            .text_color(t().fg())
+            .text_sm()
             .flex()
             .flex_col()
             .gap_2()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| cx.stop_propagation()) // clicks inside don't close
+            .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Add to playlist"))
             .child(div().text_xs().text_color(t().muted()).child("Stream or file URL"))
             .child(
                 div()
                     .flex()
                     .gap_1()
-                    .child(div().flex_1().child(self.text_box(Field::AddUrl, &self.add_url, "https://…  (Ctrl+V)", false, cx)))
-                    .child(chip("add-url", "Add", !self.add_url.trim().is_empty()).on_click(cx.listener(|this, _, _, cx| this.submit_field(Field::AddUrl, cx)))),
+                    .child(div().flex_1().min_w_0().child(self.text_box(Field::AddUrl, &self.add_url, "https://…  (Ctrl+V)", false, cx)))
+                    .child(panel::button("add-url", "Add", !self.add_url.trim().is_empty()).on_click(cx.listener(|this, _, _, cx| this.submit_field(Field::AddUrl, cx)))),
             )
             .child(div().h(px(1.)).bg(t().border()))
             .child(
@@ -1714,8 +1824,7 @@ impl Render for Player {
                         this.open_dialog(OpenKind::Folder, cx);
                     }))),
             );
-        let playlist = playlist.when(self.add_popup, |d| d.child(add_popup));
-
+        let add_dialog = add_dialog.child(add_popup);
 
         div()
             .id("root")
@@ -1734,15 +1843,22 @@ impl Render for Player {
                 if let Some(sl) = this.slider_drag {
                     this.set_slider(&sl, e.position.x.into(), window);
                 }
+                if this.panel_drag {
+                    this.drag_panel_edge(e.position.x.into(), window);
+                }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| {
                 this.dragging = false;
                 this.slider_drag = None;
+                this.text_drag = false;
+                this.end_panel_drag();
             }))
             .on_mouse_down(MouseButton::Right, cx.listener(|this, e: &MouseDownEvent, _, _| this.open_menu(e.position)))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| {
                 this.dragging = false;
                 this.slider_drag = None;
+                this.text_drag = false;
+                this.end_panel_drag();
             }))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
                 for p in paths.paths() {
@@ -1757,11 +1873,21 @@ impl Render for Player {
             }))
             .drag_over::<ExternalPaths>(|s, _, _, _| s.border_2().border_color(t().accent()))
             .child(video)
-            .when(self.panel == Panel::Playlist, |d| d.child(side_panel().child(playlist)))
+            .when(self.panel == Panel::Playlist, |d| d.child(side_panel(window).child(playlist)))
             .when(show_ui, |d| d.child(top).child(bottom))
             .children(self.pop.map(|page| self.quick_settings(page, window, cx)))
             .when(self.explorer.open, |d| d.child(self.render_explorer(window, cx)))
-            .children(self.menu.as_ref().map(|state| self.render_menu(state, &self.build_menu(window), window, cx)))
+            .children(self.settings.as_ref().map(|s| self.render_settings(s, window, cx)))
+            .when(self.pl.open, |d| d.child(self.render_playlists(window, cx)))
+            .when(self.info_open, |d| d.children(self.render_info_card(window, cx)))
+            .when(self.add_popup, |d| d.child(add_dialog))
+            .children(self.menu.as_ref().map(|state| {
+                let items = match &state.field {
+                    Some((f, secret)) => self.field_menu(f, *secret),
+                    None => self.build_menu(window),
+                };
+                self.render_menu(state, &items, window, cx)
+            }))
             .when(self.about, |d| d.child(self.about_dialog(cx)))
     }
 }
@@ -1793,7 +1919,7 @@ fn main() {
     match files.first().map(String::as_str) {
         Some("-V" | "--version") => return println!("{APP_NAME} {VERSION}"),
         Some("-h" | "--help") => {
-            return println!("{APP_NAME} {VERSION}\n\nUsage: zym-player [FILE | FOLDER | PLAYLIST.m3u]...\n\n  -h, --help     show this help\n  -V, --version  show version\n\nPlugins: {}", plugins_dir().display());
+            return println!("{APP_NAME} {VERSION}\n\nUsage: zym-media-player [FILE | FOLDER | PLAYLIST.m3u]...\n\n  -h, --help     show this help\n  -V, --version  show version\n\nPlugins: {}", plugins_dir().display());
         }
         _ => {}
     }
@@ -1802,7 +1928,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                app_id: Some("zym-player".into()), // matches zym-player.desktop -> dock/taskbar icon on Linux
+                app_id: Some("zym-media-player".into()), // matches zym-media-player.desktop -> dock/taskbar icon on Linux
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| Player::new(files, window, cx)),
@@ -1821,6 +1947,24 @@ fn main() {
             cx.activate(true);
         }
     });
+}
+
+#[cfg(test)]
+mod cache_tests {
+    #[test]
+    fn observed_props_come_from_cache() {
+        assert_eq!(super::cached("sub-delay"), None, "not observed: read from mpv");
+        assert_eq!(super::cached("volume"), Some(None), "observed, no value yet");
+        super::CACHE.lock().unwrap().insert("volume", "80.000000".into());
+        assert_eq!(super::cached("volume"), Some(Some("80.000000".into())));
+        let pl = super::parse_playlist(r#"[{"filename":"/a.mkv","current":true,"id":1},{"filename":"https://x","title":"X","id":2}]"#);
+        assert_eq!(pl, [("/a.mkv".to_string(), String::new()), ("https://x".to_string(), "X".to_string())]);
+        assert!(super::parse_playlist("").is_empty());
+        assert_eq!(super::rotation_filter(0), "");
+        assert_eq!(super::rotation_filter(90 + 270), "", "metadata + user wrap around");
+        assert_eq!(super::rotation_filter(-90), "transpose=cclock");
+        assert_eq!(super::rotation_filter(450), "transpose=clock");
+    }
 }
 
 #[cfg(test)]

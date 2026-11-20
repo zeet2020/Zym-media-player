@@ -4,9 +4,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use gpui::{Context, Div, MouseButton, SharedString, Stateful, Window, div, img, prelude::*, px, relative, rgb};
+use gpui::{Context, Div, MouseButton, SharedString, Stateful, Window, div, img, prelude::*, px, rgb};
 
+use crate::panel::{confirm_button, row_icon, sidebar, sidebar_close, sidebar_item};
 use crate::sources::{self, Item, Page, Source};
+use crate::textbox::Field;
 use crate::theme::t;
 use crate::{Player, chip, icon, icon_button};
 
@@ -16,7 +18,7 @@ pub struct Explorer {
     installed: Vec<Arc<sources::Installed>>,
     /// All connections of all plugins, grouped by plugin in sidebar order.
     pub sources: Vec<Arc<Source>>,
-    loaded: bool,
+    pub loaded: bool,
     sel: usize,
     stack: Vec<Nav>,
     /// Settings form draft for the selected connection (open = Some).
@@ -45,6 +47,8 @@ struct Nav {
     state: Load,
     token: u64,
     loading_more: bool,
+    /// The item whose route opened this page (a movie for its stream list): describes what plays from here.
+    from: Option<Item>,
 }
 
 #[derive(Clone)]
@@ -60,16 +64,17 @@ enum Load {
     Failed(String),
 }
 
-/// Which text box has keyboard focus.
-#[derive(Clone, PartialEq, Debug)]
-pub enum Field {
-    Search,
-    AddUrl,
-    Setting(String),
-    ConnName,
-}
-
 impl Explorer {
+    /// Text behind the Explorer's own fields (search, settings form, connection name).
+    pub fn field_text(&mut self, f: &Field) -> Option<&mut String> {
+        match f {
+            Field::Search => Some(&mut self.search),
+            Field::Setting(k) => self.form.as_mut().map(|form| form.entry(k.clone()).or_default()),
+            Field::ConnName => Some(&mut self.form_name),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             open: false,
@@ -110,16 +115,15 @@ impl Explorer {
 
 impl Player {
     pub fn toggle_explorer(&mut self, cx: &mut Context<Self>) {
-        self.explorer.open = !self.explorer.open;
-        if self.explorer.open {
-            self.panel = crate::Panel::None; // one right-side panel at a time
-        }
-        if !self.explorer.open {
-            self.editing = None;
+        let open = !self.explorer.open;
+        self.close_overlays();
+        if !open {
             return;
         }
+        self.explorer.open = true;
         if !self.explorer.loaded {
-            self.explorer.installed = sources::load_all();
+            let off = crate::settings::disabled("content");
+            self.explorer.installed = sources::load_all().into_iter().filter(|p| !off.contains(&p.manifest.id)).collect();
             self.explorer.sources = self.explorer.installed.iter().flat_map(|p| p.connections()).collect();
             self.explorer.loaded = true;
             // Start on the first plugin that has a connection (else the first plugin).
@@ -245,7 +249,7 @@ impl Player {
     fn push(&mut self, req: Req, title: String, cx: &mut Context<Self>) {
         let token = self.explorer.next_token;
         self.explorer.next_token += 1;
-        self.explorer.stack.push(Nav { title, req: req.clone(), state: Load::Loading, token, loading_more: false });
+        self.explorer.stack.push(Nav { title, req: req.clone(), state: Load::Loading, token, loading_more: false, from: None });
         self.fetch(req, None, token, cx);
     }
 
@@ -316,10 +320,15 @@ impl Player {
             let Some(src) = self.explorer.source() else { return };
             self.explorer.notice = Some((format!("{} {}…", if append { "Adding" } else { "Opening" }, item.title), false));
             let id = item.id.clone();
+            let parent = self.explorer.stack.last().and_then(|n| n.from.clone());
             let task = cx.background_executor().spawn(async move { src.resolve(&id) });
             cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update(cx, |p, cx| {
+                    if let Ok(pb) = &result {
+                        let info = pb.info.clone().unwrap_or_else(|| sources::Info::from_item(&item, parent.as_ref()));
+                        p.infos.insert(pb.url.clone(), info);
+                    }
                     match result {
                         Ok(pb) if append => {
                             p.mpv.append_stream(&pb);
@@ -340,6 +349,9 @@ impl Player {
             .detach();
         } else if let Some(route) = item.route.clone() {
             self.push(Req::Browse(route), item.title.clone(), cx);
+            if let Some(nav) = self.explorer.stack.last_mut() {
+                nav.from = Some(item);
+            }
         }
     }
 
@@ -370,85 +382,22 @@ impl Player {
         self.push(Req::Search(q.clone()), format!("“{q}”"), cx);
     }
 
-    /// Enter in a text field.
-    pub fn submit_field(&mut self, f: Field, cx: &mut Context<Self>) {
+    /// Enter in one of the Explorer's text fields.
+    pub fn submit_explorer_field(&mut self, f: &Field, cx: &mut Context<Self>) {
         match f {
             Field::Search => self.submit_search(cx),
-            Field::AddUrl => {
-                let url = self.add_url.trim().to_string();
-                if !url.is_empty() {
-                    self.mpv.load(&url, "append-play");
-                    self.add_url.clear();
-                }
-                self.editing = None;
-                self.add_popup = false;
-            }
-            Field::Setting(_) | Field::ConnName => self.save_settings_form(cx),
+            _ => self.save_settings_form(cx),
         }
-    }
-
-    /// Mutable text behind a field.
-    pub fn field_text(&mut self, f: &Field) -> Option<&mut String> {
-        match f {
-            Field::Search => Some(&mut self.explorer.search),
-            Field::AddUrl => Some(&mut self.add_url),
-            Field::Setting(k) => self.explorer.form.as_mut().map(|form| form.entry(k.clone()).or_default()),
-            Field::ConnName => Some(&mut self.explorer.form_name),
-        }
-    }
-
-    /// Single-line text box; click to focus. Keys are handled in Player::on_key.
-    pub fn text_box(&self, f: Field, value: &str, placeholder: &str, secret: bool, cx: &mut Context<Self>) -> Stateful<Div> {
-        let focused = self.editing.as_ref() == Some(&f);
-        let shown = if secret { "•".repeat(value.chars().count()) } else { value.to_string() };
-        let field = f.clone();
-        div()
-            .id(SharedString::from(format!("field-{f:?}")))
-            .flex()
-            .items_center()
-            .h(px(32.))
-            .px_2()
-            .rounded_md()
-            .overflow_hidden()
-            .bg(t().hover())
-            .border_1()
-            .border_color(if focused { t().accent() } else { t().field() })
-            .cursor_text()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _, _, _| this.editing = Some(field.clone())))
-            .child(if shown.is_empty() && !focused {
-                div().text_color(t().dim()).whitespace_nowrap().child(placeholder.to_string())
-            } else {
-                div().whitespace_nowrap().child(shown)
-            })
-            .when(focused, |d| d.child(div().w(px(1.5)).h(px(16.)).bg(t().accent())))
     }
 
     // ---------------------------------------------------------------- render
 
     pub fn render_explorer(&self, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let ex = &self.explorer;
-        let sidebar = div()
-            .w(px(170.))
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(t().hover())
-            .border_r_1()
-            .border_color(t().hover())
-            .child(div().px_4().pt_4().pb_2().text_xs().text_color(t().muted()).child("SOURCES"))
+        let sidebar = sidebar("PLUGINS")
             .children(ex.installed.iter().enumerate().map(|(pi, plugin)| {
                 let n = ex.sources.iter().filter(|s| Arc::ptr_eq(&s.installed, plugin)).count();
-                let active = pi == ex.sel_plugin;
-                div()
-                    .id(("plugin", pi))
-                    .mx_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|st| st.bg(t().hover()))
-                    .when(active, |d| d.bg(t().accent_a(0x30)).text_color(t().accent()))
+                sidebar_item(("plugin", pi), pi == ex.sel_plugin)
                     .child(plugin.manifest.name.clone())
                     .child(div().text_xs().text_color(t().dim()).child(match n {
                         0 => "Not set up".to_string(),
@@ -459,53 +408,19 @@ impl Player {
             }))
             .when(ex.installed.is_empty(), |d| {
                 d.child(div().px_4().text_sm().text_color(t().muted()).child(format!(
-                    "No sources installed.\n\nPut a source folder (manifest.json + plugin.wasm) in\n{}",
+                    "No content plugins installed.\n\nPut a plugin folder (manifest.json + plugin.wasm) in\n{}",
                     sources::sources_dir().display()
                 )))
             })
             .child(div().flex_1())
-            .child(
-                div()
-                    .id("ex-close")
-                    .m_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .text_color(t().muted())
-                    .hover(|st| st.bg(t().hover()))
-                    .child("Close  (Esc)")
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_explorer(cx))),
-            );
+            .child(sidebar_close("ex-close").on_click(cx.listener(|this, _, _, cx| this.toggle_explorer(cx))));
 
-        div()
-            .id("explorer")
-            // Translucent side panel like the playlist: video stays visible, controls stay usable.
-            .absolute()
-            // Roomier than the playlist: the explorer holds grids, forms and long lists.
-            .top(px(48.))
-            .right(px(crate::PANEL_GAP))
-            .bottom(px(crate::PANEL_V))
-            .w(relative(0.70))
-            .min_w(px(560.))
-            .max_w(px(1040.))
-            .flex()
-            .rounded_xl()
-            .overflow_hidden()
-            .shadow_lg()
-            .bg(t().surface())
-            .border_1()
-            .border_color(t().border())
-            .text_color(t().fg())
-            .text_sm()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()) // never reach the video
-            .child(sidebar)
-            .child(self.render_main(window, cx))
+        self.big_panel("explorer", window, cx).child(sidebar).child(self.render_main(window, cx))
     }
 
     fn render_main(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let ex = &self.explorer;
-        let Some(plugin) = ex.plugin() else { return div().flex_1() };
+        let Some(plugin) = ex.plugin() else { return div().flex_1().min_w_0() };
         let src = ex.source();
         let conns = ex.plugin_conns();
         let nav = ex.stack.last();
@@ -541,7 +456,7 @@ impl Player {
             }))
             .child(div().flex_1().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).overflow_hidden().text_ellipsis().whitespace_nowrap().child(title))
             .when(browsing && src.as_ref().is_some_and(|s| s.has("search")), |d| {
-                d.child(div().w(px(220.)).child(self.text_box(Field::Search, &ex.search, "Search…  (Enter)", false, cx)))
+                d.child(div().w(px(220.)).min_w(px(90.)).flex_shrink().child(self.text_box(Field::Search, &ex.search, "Search…  (Enter)", false, cx)))
             })
             // Gear: manage this plugin's connections (list + add); toggles back to browsing.
             .child(
@@ -611,18 +526,7 @@ impl Player {
                         })))
                         .child(if ex.confirm_remove == Some(i) {
                             // Second click confirms: deletes this connection's saved settings (incl. password).
-                            div()
-                                .id(SharedString::from(format!("conn-rm-ok-{i}")))
-                                .px_2()
-                                .h(px(28.))
-                                .flex()
-                                .items_center()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .bg(rgb(0xd93a3a))
-                                .text_color(rgb(0xffffff))
-                                .text_xs()
-                                .child("Remove?")
+                            confirm_button(SharedString::from(format!("conn-rm-ok-{i}")), "Remove?")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.explorer.confirm_remove = None;
@@ -662,7 +566,7 @@ impl Player {
                         .items_center()
                         .gap_3()
                         .max_w(px(480.))
-                        .child(div().text_color(rgb(0xff8080)).child("This source couldn't load the page"))
+                        .child(div().text_color(t().error()).child("This plugin couldn't load the page"))
                         .child(div().text_color(t().muted()).text_center().child(e.clone()))
                         .child(
                             div()
@@ -681,6 +585,7 @@ impl Player {
 
         div()
             .flex_1()
+            .min_w_0() // shrink with the panel; otherwise header icons are pushed out of view
             .h_full()
             .flex()
             .flex_col()
@@ -748,7 +653,10 @@ impl Player {
                     .px_4()
                     .py_2()
                     .rounded_lg()
-                    .bg(if *is_err { rgb(0x4a1f1f) } else { rgb(0x1f2a40) })
+                    .shadow_lg()
+                    // Fixed dark toast in both themes, so the text must be fixed too (theme fg is dark in light mode).
+                    .bg(if *is_err { rgb(0x7a2424) } else { rgb(0x1f2a40) })
+                    .text_color(rgb(0xffffff))
                     .child(msg.clone())
             }))
     }
@@ -793,7 +701,7 @@ impl Player {
                 )
             })
             .when(page.dropped > 0, |d| {
-                d.child(div().text_xs().text_color(t().dim()).child(format!("{} invalid item(s) from this source were hidden.", page.dropped)))
+                d.child(div().text_xs().text_color(t().dim()).child(format!("{} invalid item(s) from this plugin were hidden.", page.dropped)))
             })
     }
 
@@ -899,19 +807,6 @@ fn group_by_section(settings: &[sources::Setting]) -> Vec<(Option<String>, Vec<&
 }
 
 /// Small themed icon button for list rows (edit / remove).
-fn row_icon(id: String, name: &str) -> Stateful<Div> {
-    div()
-        .id(SharedString::from(id))
-        .size(px(28.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .cursor_pointer()
-        .hover(|s| s.bg(t().pressed()))
-        .child(icon(name).size(px(16.)).text_color(t().muted()))
-}
 
 fn center(child: Div) -> Div {
     div().size_full().flex().items_center().justify_center().child(child)
@@ -984,21 +879,34 @@ fn list_row(id: SharedString, it: &Item, add: Option<gpui::AnyElement>) -> State
         .child(div().w(px(20.)).text_center().text_color(t().muted()).child(if it.playable { "▶" } else { "›" }))
 }
 
+/// Fixed-size poster card (2:3 art + one title line + one subtitle line), so every card in a row
+/// lines up whatever the art's shape, load state or text length.
 fn poster_card(id: SharedString, it: &Item) -> Stateful<Div> {
+    const W: f32 = 142.;
+    const H: f32 = 213.;
     let url = it.art.poster.clone().or_else(|| art_url(it));
+    let line = |text: String| div().h(px(18.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(text);
     div()
         .id(id)
-        .w(px(150.))
+        .flex_none()
+        .w(px(W + 8.))
         .cursor_pointer()
         .rounded_md()
         .hover(|s| s.bg(t().hover()))
         .p_1()
-        .child(match url {
-            Some(u) => img(u).w(px(142.)).h(px(213.)).rounded_md().object_fit(gpui::ObjectFit::Cover).into_any_element(),
-            None => div().w(px(142.)).h(px(213.)).rounded_md().bg(t().field()).into_any_element(),
-        })
-        .child(div().mt_1().text_sm().overflow_hidden().text_ellipsis().whitespace_nowrap().child(it.title.clone()))
-        .children(it.subtitle.clone().map(|s| div().text_xs().text_color(t().muted()).child(s)))
+        .child(
+            // Frame holds the size while the image loads, if it fails, or if its aspect differs.
+            div()
+                .w(px(W))
+                .h(px(H))
+                .flex_none()
+                .rounded_md()
+                .overflow_hidden()
+                .bg(t().field())
+                .children(url.map(|u| img(u).size_full().object_fit(gpui::ObjectFit::Cover))),
+        )
+        .child(line(it.title.clone()).mt_1().text_sm())
+        .child(line(it.subtitle.clone().unwrap_or_default()).text_xs().text_color(t().muted()))
 }
 
 #[cfg(test)]

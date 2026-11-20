@@ -1,6 +1,6 @@
-Zym Player (Linux x86_64)
+Zym Media Player (Linux x86_64)
 
-Run: ./zym-player [FILE...]
+Run: ./zym-media-player [FILE...]
 
 Runtime requirement: libmpv (libmpv.so.2), plus libxkbcommon, libxcb and a
 Vulkan driver.

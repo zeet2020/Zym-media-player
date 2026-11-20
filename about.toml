@@ -1,5 +1,5 @@
 # cargo-about: generate THIRD-PARTY-LICENSES.md and act as a license gate.
-# Only licenses compatible with distributing Zym Player under GPL-3.0-or-later are accepted;
+# Only licenses compatible with distributing Zym Media Player under GPL-3.0-or-later are accepted;
 # for "A OR B" crates cargo-about picks the first accepted option (e.g. BSD over GPL-2.0-only).
 # Generation FAILS if any dependency's license is not in this list.
 accepted = [

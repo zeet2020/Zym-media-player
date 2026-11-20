@@ -2,7 +2,7 @@
 name = "zym-source-m3u"
 version = "0.1.0"
 edition = "2024"
-description = "Zym Player source plugin: IPTV channels from an M3U/M3U8 playlist"
+description = "Zym Media Player content plugin: IPTV channels from an M3U/M3U8 playlist"
 license = "GPL-3.0-or-later"
 
 [lib]

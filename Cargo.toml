@@ -1,9 +1,9 @@
 [package]
-name = "zym-player"
-version = "0.1.0"
+name = "zym-media-player"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.93"
-description = "Zym Player — a lightweight media player built on mpv and GPUI"
+description = "Zym Media Player — a lightweight media player built on mpv and GPUI"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/zeet2020/Zym-media-player"
 
@@ -31,63 +31,71 @@ extism = { path = "vendor/extism" }
 
 # Linux packages (built in .github/workflows/release.yml).
 [package.metadata.deb]
-maintainer = "Zym Player"
+maintainer = "Zym Media Player"
 section = "video"
-extended-description = "Lightweight media player built on libmpv with a GPUI interface. Plays anything mpv plays; supports mpv scripts and sandboxed WebAssembly source plugins."
+extended-description = "Lightweight media player built on libmpv with a GPUI interface. Plays anything mpv plays; supports mpv scripts and sandboxed WebAssembly content plugins."
 # $auto -> libmpv2, libxcb1, libxkbcommon*; vulkan + wayland-client are dlopen()ed so list them.
 depends = "$auto, libvulkan1, libwayland-client0"
+# Renamed from zym-player (0.1.0): upgrading removes the old package instead of installing beside it.
+conflicts = "zym-player"
+replaces = "zym-player"
+provides = "zym-player"
 assets = [
-    ["target/release/zym-player", "usr/bin/", "755"],
-    ["packaging/zym-player.desktop", "usr/share/applications/", "644"],
-    # Bundled source plugins (built by the workflow before packaging).
-    ["sources/m3u/manifest.json", "usr/share/zym-player/sources/org.zym.m3u/manifest.json", "644"],
-    ["sources/m3u/target/wasm32-unknown-unknown/release/zym_source_m3u.wasm", "usr/share/zym-player/sources/org.zym.m3u/plugin.wasm", "644"],
-    ["sources/webdav/manifest.json", "usr/share/zym-player/sources/org.zym.webdav/manifest.json", "644"],
-    ["sources/webdav/target/wasm32-unknown-unknown/release/zym_source_webdav.wasm", "usr/share/zym-player/sources/org.zym.webdav/plugin.wasm", "644"],
-    ["sources/ftp/manifest.json", "usr/share/zym-player/sources/org.zym.ftp/manifest.json", "644"],
-    ["sources/ftp/target/wasm32-unknown-unknown/release/zym_source_ftp.wasm", "usr/share/zym-player/sources/org.zym.ftp/plugin.wasm", "644"],
-    ["sources/stremio/manifest.json", "usr/share/zym-player/sources/org.zym.stremio/manifest.json", "644"],
-    ["sources/stremio/target/wasm32-unknown-unknown/release/zym_source_stremio.wasm", "usr/share/zym-player/sources/org.zym.stremio/plugin.wasm", "644"],
-    ["LICENSE", "usr/share/doc/zym-player/LICENSE", "644"],
-    ["THIRD-PARTY-LICENSES.md", "usr/share/doc/zym-player/THIRD-PARTY-LICENSES.md", "644"],
-    ["packaging/zym-player.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["packaging/icons/zym-player-16.png", "usr/share/icons/hicolor/16x16/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-24.png", "usr/share/icons/hicolor/24x24/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-32.png", "usr/share/icons/hicolor/32x32/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-48.png", "usr/share/icons/hicolor/48x48/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-64.png", "usr/share/icons/hicolor/64x64/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-128.png", "usr/share/icons/hicolor/128x128/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-256.png", "usr/share/icons/hicolor/256x256/apps/zym-player.png", "644"],
-    ["packaging/icons/zym-player-512.png", "usr/share/icons/hicolor/512x512/apps/zym-player.png", "644"],
+    ["target/release/zym-media-player", "usr/bin/", "755"],
+    ["packaging/zym-media-player.desktop", "usr/share/applications/", "644"],
+    # Bundled content plugins (built by the workflow before packaging).
+    ["sources/m3u/manifest.json", "usr/share/zym-media-player/sources/org.zym.m3u/manifest.json", "644"],
+    ["sources/m3u/target/wasm32-unknown-unknown/release/zym_source_m3u.wasm", "usr/share/zym-media-player/sources/org.zym.m3u/plugin.wasm", "644"],
+    ["sources/webdav/manifest.json", "usr/share/zym-media-player/sources/org.zym.webdav/manifest.json", "644"],
+    ["sources/webdav/target/wasm32-unknown-unknown/release/zym_source_webdav.wasm", "usr/share/zym-media-player/sources/org.zym.webdav/plugin.wasm", "644"],
+    ["sources/ftp/manifest.json", "usr/share/zym-media-player/sources/org.zym.ftp/manifest.json", "644"],
+    ["sources/ftp/target/wasm32-unknown-unknown/release/zym_source_ftp.wasm", "usr/share/zym-media-player/sources/org.zym.ftp/plugin.wasm", "644"],
+    ["sources/stremio/manifest.json", "usr/share/zym-media-player/sources/org.zym.stremio/manifest.json", "644"],
+    ["sources/stremio/target/wasm32-unknown-unknown/release/zym_source_stremio.wasm", "usr/share/zym-media-player/sources/org.zym.stremio/plugin.wasm", "644"],
+    ["LICENSE", "usr/share/doc/zym-media-player/LICENSE", "644"],
+    ["THIRD-PARTY-LICENSES.md", "usr/share/doc/zym-media-player/THIRD-PARTY-LICENSES.md", "644"],
+    ["packaging/zym-media-player.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["packaging/icons/zym-media-player-16.png", "usr/share/icons/hicolor/16x16/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-24.png", "usr/share/icons/hicolor/24x24/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-32.png", "usr/share/icons/hicolor/32x32/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-48.png", "usr/share/icons/hicolor/48x48/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-64.png", "usr/share/icons/hicolor/64x64/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-128.png", "usr/share/icons/hicolor/128x128/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-256.png", "usr/share/icons/hicolor/256x256/apps/zym-media-player.png", "644"],
+    ["packaging/icons/zym-media-player-512.png", "usr/share/icons/hicolor/512x512/apps/zym-media-player.png", "644"],
 ]
 
 [package.metadata.generate-rpm]
 assets = [
-    { source = "target/release/zym-player", dest = "/usr/bin/zym-player", mode = "755" },
-    { source = "packaging/zym-player.desktop", dest = "/usr/share/applications/zym-player.desktop", mode = "644" },
-    { source = "sources/m3u/manifest.json", dest = "/usr/share/zym-player/sources/org.zym.m3u/manifest.json", mode = "644" },
-    { source = "sources/m3u/target/wasm32-unknown-unknown/release/zym_source_m3u.wasm", dest = "/usr/share/zym-player/sources/org.zym.m3u/plugin.wasm", mode = "644" },
-    { source = "sources/webdav/manifest.json", dest = "/usr/share/zym-player/sources/org.zym.webdav/manifest.json", mode = "644" },
-    { source = "sources/webdav/target/wasm32-unknown-unknown/release/zym_source_webdav.wasm", dest = "/usr/share/zym-player/sources/org.zym.webdav/plugin.wasm", mode = "644" },
-    { source = "sources/ftp/manifest.json", dest = "/usr/share/zym-player/sources/org.zym.ftp/manifest.json", mode = "644" },
-    { source = "sources/ftp/target/wasm32-unknown-unknown/release/zym_source_ftp.wasm", dest = "/usr/share/zym-player/sources/org.zym.ftp/plugin.wasm", mode = "644" },
-    { source = "sources/stremio/manifest.json", dest = "/usr/share/zym-player/sources/org.zym.stremio/manifest.json", mode = "644" },
-    { source = "sources/stremio/target/wasm32-unknown-unknown/release/zym_source_stremio.wasm", dest = "/usr/share/zym-player/sources/org.zym.stremio/plugin.wasm", mode = "644" },
-    { source = "LICENSE", dest = "/usr/share/licenses/zym-player/LICENSE", mode = "644", doc = false },
-    { source = "THIRD-PARTY-LICENSES.md", dest = "/usr/share/licenses/zym-player/THIRD-PARTY-LICENSES.md", mode = "644", doc = false },
-    { source = "packaging/zym-player.svg", dest = "/usr/share/icons/hicolor/scalable/apps/zym-player.svg", mode = "644" },
-    { source = "packaging/icons/zym-player-16.png", dest = "/usr/share/icons/hicolor/16x16/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-24.png", dest = "/usr/share/icons/hicolor/24x24/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/zym-player.png", mode = "644" },
-    { source = "packaging/icons/zym-player-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/zym-player.png", mode = "644" },
+    { source = "target/release/zym-media-player", dest = "/usr/bin/zym-media-player", mode = "755" },
+    { source = "packaging/zym-media-player.desktop", dest = "/usr/share/applications/zym-media-player.desktop", mode = "644" },
+    { source = "sources/m3u/manifest.json", dest = "/usr/share/zym-media-player/sources/org.zym.m3u/manifest.json", mode = "644" },
+    { source = "sources/m3u/target/wasm32-unknown-unknown/release/zym_source_m3u.wasm", dest = "/usr/share/zym-media-player/sources/org.zym.m3u/plugin.wasm", mode = "644" },
+    { source = "sources/webdav/manifest.json", dest = "/usr/share/zym-media-player/sources/org.zym.webdav/manifest.json", mode = "644" },
+    { source = "sources/webdav/target/wasm32-unknown-unknown/release/zym_source_webdav.wasm", dest = "/usr/share/zym-media-player/sources/org.zym.webdav/plugin.wasm", mode = "644" },
+    { source = "sources/ftp/manifest.json", dest = "/usr/share/zym-media-player/sources/org.zym.ftp/manifest.json", mode = "644" },
+    { source = "sources/ftp/target/wasm32-unknown-unknown/release/zym_source_ftp.wasm", dest = "/usr/share/zym-media-player/sources/org.zym.ftp/plugin.wasm", mode = "644" },
+    { source = "sources/stremio/manifest.json", dest = "/usr/share/zym-media-player/sources/org.zym.stremio/manifest.json", mode = "644" },
+    { source = "sources/stremio/target/wasm32-unknown-unknown/release/zym_source_stremio.wasm", dest = "/usr/share/zym-media-player/sources/org.zym.stremio/plugin.wasm", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/zym-media-player/LICENSE", mode = "644", doc = false },
+    { source = "THIRD-PARTY-LICENSES.md", dest = "/usr/share/licenses/zym-media-player/THIRD-PARTY-LICENSES.md", mode = "644", doc = false },
+    { source = "packaging/zym-media-player.svg", dest = "/usr/share/icons/hicolor/scalable/apps/zym-media-player.svg", mode = "644" },
+    { source = "packaging/icons/zym-media-player-16.png", dest = "/usr/share/icons/hicolor/16x16/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-24.png", dest = "/usr/share/icons/hicolor/24x24/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/zym-media-player.png", mode = "644" },
+    { source = "packaging/icons/zym-media-player-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/zym-media-player.png", mode = "644" },
 ]
 # auto-req would scan the build host (Ubuntu) with ldd and pin its transitive sonames
 # (libavcodec.so.62, ...), which Fedora can't satisfy. List Fedora package names instead.
 auto-req = "no"
+# Renamed from zym-player (0.1.0): the upgrade replaces the old package.
+[package.metadata.generate-rpm.obsoletes]
+zym-player = "*"
+
 [package.metadata.generate-rpm.requires]
 mpv-libs = "*"
 libxcb = "*"
