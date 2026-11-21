@@ -48,13 +48,15 @@ static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 /// Properties the UI reads every frame. mpv_get_property waits for mpv's core, which is often busy
 /// (opening a stream, switching YouTube formats): 100-300 ms UI freezes, Explorer included. The event
 /// thread observes these instead and keeps the latest value here; reads never block.
-const OBSERVED: [&str; 20] = [
+const OBSERVED: [&str; 25] = [
     "time-pos", "duration", "pause", "idle-active", "eof-reached", "media-title", "mute", "volume", "playlist-count", "playlist-pos", "playlist",
     // ⓘ card file facts
     "filename", "file-size", "width", "height", "video-codec", "audio-codec-name", "file-format",
     // Quick Settings › Video
     "hwdec-current",
     visualizer::PROPERTY,
+    // Quick Settings › Picture (applied as a filter, see update_picture)
+    "brightness", "contrast", "saturation", "gamma", "hue",
 ];
 static CACHE: Mutex<std::collections::BTreeMap<&'static str, String>> = Mutex::new(std::collections::BTreeMap::new());
 
@@ -76,6 +78,35 @@ fn parse_playlist(json: &str) -> Vec<(String, String)> {
             (s("filename"), s("title"))
         })
         .collect()
+}
+
+const PIC_PROPS: [&str; 5] = ["brightness", "contrast", "saturation", "gamma", "hue"];
+
+/// mpv's -100..100 picture values -> (ffmpeg option, value, filter) for `eq` and `hue`.
+fn picture_args(v: [i64; 5]) -> [(&'static str, String, &'static str); 5] {
+    let f = |x: i64| x as f64 / 100.;
+    [
+        ("brightness", format!("{:.3}", f(v[0]) * 0.5), "eq"),
+        ("contrast", format!("{:.3}", 1. + f(v[1])), "eq"),
+        ("saturation", format!("{:.3}", 1. + f(v[2])), "eq"),
+        ("gamma", format!("{:.3}", 2f64.powf(f(v[3]) * 2.)), "eq"),
+        ("h", format!("{:.1}", f(v[4]) * 180.), "hue"),
+    ]
+}
+
+/// Aspect as a number: "16:9", "2.35:1" or what mpv reports back ("1.777778"); None = the
+/// video's own (mpv says "no", "-1" or "-2").
+fn aspect_ratio(s: &str) -> Option<f64> {
+    let r = match s.split_once(':') {
+        Some((a, b)) => a.trim().parse::<f64>().ok()? / b.trim().parse::<f64>().ok()?,
+        None => s.trim().parse().ok()?,
+    };
+    (r.is_finite() && r > 0.).then_some(r)
+}
+
+/// A path that can wrap: a zero-width space after each separator (paths have no spaces).
+fn breakable_path(p: &std::path::Path) -> String {
+    p.display().to_string().chars().flat_map(|c| if matches!(c, '/' | '\\') { vec![c, '\u{200B}'] } else { vec![c] }).collect()
 }
 
 /// What's decoding the video right now, worded so "hardware decoding on" + CPU decoding makes sense:
@@ -646,6 +677,8 @@ pub struct Player {
     pub infos: std::collections::HashMap<String, sources::Info>,
     /// Music visualizer (audio-only files).
     pub viz: visualizer::Viz,
+    /// Picture values in the `@zympic` filter (None = no filter).
+    pic: Option<[i64; 5]>,
     pub info_open: bool,
     /// Settings › mpv: couldn't create/open mpv.conf.
     pub mpv_conf_error: Option<String>,
@@ -786,6 +819,7 @@ impl Player {
             panel_drag: false,
             infos: Default::default(),
             viz: visualizer::Viz::new(),
+            pic: None,
             info_open: false,
             mpv_conf_error: None,
             mpv_verbose: std::env::var_os("ZYM_DEBUG").is_some(),
@@ -823,6 +857,35 @@ impl Player {
         style.save();
     }
 
+    /// Quick Settings › Picture. The software renderer ignores mpv's brightness / contrast /
+    /// saturation / gamma / hue, so the sliders' values drive an ffmpeg `eq` + `hue` filter instead:
+    /// added on the first change, updated in place while dragging (vf-command, no re-init),
+    /// removed when everything is back to 0.
+    fn update_picture(&mut self) {
+        let vals = PIC_PROPS.map(|p| self.mpv.get_f64(p).unwrap_or(0.).round() as i64);
+        if self.pic == Some(vals) || (self.pic.is_none() && vals == [0; 5]) {
+            return;
+        }
+        if vals == [0; 5] {
+            self.mpv.cmd(&["vf", "remove", "@zympic"]);
+            self.pic = None;
+            return;
+        }
+        let args = picture_args(vals);
+        match self.pic {
+            None => {
+                let eq: Vec<String> = args[..4].iter().map(|(k, v, _)| format!("{k}={v}")).collect();
+                self.mpv.cmd(&["vf", "add", &format!("@zympic:lavfi=[eq={},hue=h={}]", eq.join(":"), args[4].1)]);
+            }
+            Some(old) => {
+                for (_, (k, v, target)) in args.iter().enumerate().filter(|(i, _)| old[*i] != vals[*i]) {
+                    self.mpv.cmd(&["vf-command", "zympic", k, v, target]);
+                }
+            }
+        }
+        self.pic = Some(vals);
+    }
+
     fn update_visualizer(&mut self) {
         let want = if self.viz.style == visualizer::Style::Off || self.mpv.get_string("video-codec").is_some() {
             false
@@ -857,6 +920,7 @@ impl Player {
             }
         }
         self.update_visualizer();
+        self.update_picture();
         // Stopped, or now playing audio only: don't leave the last video's frame on screen.
         if self.mpv.get_flag("idle-active") || self.audio_only() {
             if let Some(old) = self.frame.take() {
@@ -1200,7 +1264,16 @@ impl Player {
         let aspect = m.get_string("video-aspect-override").unwrap_or_default();
         let aspect = if aspect.starts_with('-') || aspect.is_empty() { "no".to_string() } else { aspect };
         const ASPECTS: [(&str, &str); 5] = [("Default", "no"), ("16:9", "16:9"), ("4:3", "4:3"), ("21:9", "2.35:1"), ("1:1", "1:1")];
-        let aspect_label = ASPECTS.iter().find(|a| a.1 == aspect || aspect.starts_with(&a.1[..2.min(a.1.len())])).map(|a| a.0).unwrap_or("Custom");
+        let current = aspect_ratio(&aspect);
+        let aspect_label = ASPECTS
+            .iter()
+            .find(|a| match (aspect_ratio(a.1), current) {
+                (None, None) => true,
+                (Some(x), Some(y)) => (x - y).abs() < 0.01,
+                _ => false,
+            })
+            .map(|a| a.0)
+            .unwrap_or("Custom");
 
         let body = div().flex().flex_col();
         let body = match page {
@@ -1379,7 +1452,14 @@ impl Player {
                     .child(div().text_color(t().muted()).pb_2().child("A lightweight media player built on mpv and GPUI."))
                     .child(line("Playback engine", mpv_v))
                     .child(line("FFmpeg", ff_v))
-                    .child(line("Plugins", plugins_dir().display().to_string()))
+                    // Paths have no spaces to wrap at: label above, path below, breakable after each separator.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_color(t().muted()).child("Plugins"))
+                            .child(div().text_xs().min_w_0().child(breakable_path(&plugins_dir()))),
+                    )
                     .child(self.update_row(cx))
                     .child(
                         div().pt_3().flex().justify_end().child(
@@ -2138,5 +2218,19 @@ mod tests {
         assert_eq!(n(true, false, Some("nvdec-copy"), Some("h264")).unwrap(), "Decoding on the GPU (nvdec)");
         assert_eq!(n(false, false, Some("no"), Some("h264")).unwrap(), "Decoding on the CPU");
         assert_eq!(n(true, false, Some("no"), Some("av1 (Alliance for Open Media AV1)")).unwrap(), "Decoding on the CPU: your GPU can't decode AV1 video");
+    }
+
+    #[test]
+    fn aspect_and_picture() {
+        use super::{aspect_ratio as r, picture_args};
+        assert!((r("16:9").unwrap() - r("1.777778").unwrap()).abs() < 0.01, "mpv reports 16:9 back as a number");
+        assert!((r("2.35:1").unwrap() - 2.35).abs() < 1e-9);
+        assert_eq!(r("no"), None);
+        assert_eq!(r("-2.000000"), None, "default as mpv reports it");
+        assert_eq!(super::breakable_path(std::path::Path::new("/a/b")), "/\u{200B}a/\u{200B}b");
+        let a = picture_args([0, 0, 0, 0, 0]);
+        assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.000", "1.000", "1.000", "0.0"], "0 = unchanged picture");
+        let a = picture_args([100, -100, 100, 50, -50]);
+        assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[2].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.500", "0.000", "2.000", "2.000", "-90.0"]);
     }
 }
