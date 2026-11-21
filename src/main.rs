@@ -94,6 +94,30 @@ fn picture_args(v: [i64; 5]) -> [(&'static str, String, &'static str); 5] {
     ]
 }
 
+/// Audio EQ presets: (name, [(Hz, gain dB)]), one-octave peaking bands. The same presets as the
+/// GoCast Android TV receiver.
+const AUDIO_EQ: [(&str, &[(u32, i32)]); 12] = [
+    ("Flat", &[]),
+    ("Rock", &[(70, 4), (180, 3), (320, -1), (600, -1), (1000, 0), (3000, 1), (6000, 3), (12000, 4), (14000, 4), (16000, 4)]),
+    ("Pop", &[(70, -1), (180, 2), (320, 4), (600, 4), (1000, 2), (3000, 0), (6000, -1), (12000, -2), (14000, -2), (16000, -2)]),
+    ("Jazz", &[(70, 3), (180, 2), (320, 0), (600, 2), (1000, -2), (3000, -2), (6000, 0), (12000, 2), (14000, 3), (16000, 3)]),
+    ("Classical", &[(6000, -4), (12000, -4), (14000, -4), (16000, -6)]),
+    ("Electronic", &[(70, 5), (180, 4), (320, 1), (600, 0), (1000, -2), (3000, 2), (6000, 2), (12000, 3), (14000, 4), (16000, 5)]),
+    ("Hip-hop", &[(70, 5), (180, 4), (320, 2), (600, 3), (1000, -1), (3000, -1), (6000, 2), (12000, 3), (14000, 3), (16000, 2)]),
+    ("R&B", &[(70, 5), (180, 4), (320, 0), (600, -2), (1000, -2), (3000, 2), (6000, 2), (12000, 3), (14000, 3), (16000, 4)]),
+    ("Acoustic", &[(70, 4), (180, 3), (320, 2), (600, 0), (1000, 0), (3000, 2), (6000, 4), (12000, 4), (14000, 4), (16000, 4)]),
+    ("Bass boost", &[(70, 8), (180, 6), (320, 4), (600, 2)]),
+    ("Treble", &[(3000, 2), (6000, 4), (12000, 6), (14000, 7), (16000, 8)]),
+    ("Dance", &[(70, 6), (180, 5), (320, 2), (600, 0), (1000, -2), (3000, 2), (6000, 3), (12000, 4), (14000, 5), (16000, 5)]),
+];
+
+/// `af add` argument for EQ preset `name`; None for Flat (or an unknown name).
+fn eq_filter(name: &str) -> Option<String> {
+    let (_, bands) = AUDIO_EQ.iter().find(|(n, _)| *n == name)?;
+    let chain: Vec<String> = bands.iter().map(|(f, g)| format!("equalizer=f={f}:width_type=o:width=1:g={g}")).collect();
+    (!chain.is_empty()).then(|| format!("@zymeq:lavfi=[{}]", chain.join(",")))
+}
+
 /// Aspect as a number: "16:9", "2.35:1" or what mpv reports back ("1.777778"); None = the
 /// video's own (mpv says "no", "-1" or "-2").
 fn aspect_ratio(s: &str) -> Option<f64> {
@@ -677,6 +701,8 @@ pub struct Player {
     pub infos: std::collections::HashMap<String, sources::Info>,
     /// Music visualizer (audio-only files).
     pub viz: visualizer::Viz,
+    /// Audio EQ preset in Quick Settings › Audio (a name from AUDIO_EQ).
+    eq: &'static str,
     /// Picture values in the `@zympic` filter (None = no filter).
     pic: Option<[i64; 5]>,
     pub info_open: bool,
@@ -754,6 +780,20 @@ const PICTURE: [Slider; 6] = [
     slider("Hue", "hue", -100.0, 100.0, 0.0, 1.0, f_int),
     slider("Zoom", "video-zoom", -1.0, 2.0, 0.0, 0.05, f_zoom),
 ];
+/// (name, [brightness, contrast, saturation, gamma]); hue and zoom are left alone.
+/// The same presets as the GoCast Android TV receiver.
+const PICTURE_PRESETS: [(&str, [i64; 4]); 10] = [
+    ("Auto", [0, 0, 0, 0]),
+    ("Vivid", [5, 10, 25, 0]),
+    ("Movie", [-3, 8, 10, 3]),
+    ("Cinematic", [-5, 5, -10, 5]),
+    ("Sports", [3, 8, 20, -3]),
+    ("Animation", [5, 5, 30, 0]),
+    ("Documentary", [-2, 5, -5, 5]),
+    ("Classic B&W", [0, 5, -100, 0]),
+    ("Warm", [2, 3, 10, 0]),
+    ("Night", [-15, -5, -10, 10]),
+];
 const AUDIO_DELAY: Slider = slider("Audio delay", "audio-delay", -5.0, 5.0, 0.0, 0.05, f_secs);
 const SUB_DELAY: Slider = slider("Subtitle delay", "sub-delay", -10.0, 10.0, 0.0, 0.05, f_secs);
 
@@ -820,6 +860,7 @@ impl Player {
             infos: Default::default(),
             viz: visualizer::Viz::new(),
             pic: None,
+            eq: "Flat",
             info_open: false,
             mpv_conf_error: None,
             mpv_verbose: std::env::var_os("ZYM_DEBUG").is_some(),
@@ -884,6 +925,18 @@ impl Player {
             }
         }
         self.pic = Some(vals);
+    }
+
+    /// Swap the `@zymeq` audio filter for preset `name` (Flat = none). Only this filter changes;
+    /// loudness normalisation and the visualizer stay in the chain.
+    fn set_eq(&mut self, name: &'static str) {
+        if self.eq != "Flat" {
+            self.mpv.cmd(&["af", "remove", "@zymeq"]);
+        }
+        if let Some(f) = eq_filter(name) {
+            self.mpv.cmd(&["af", "add", &f]);
+        }
+        self.eq = name;
     }
 
     fn update_visualizer(&mut self) {
@@ -1325,6 +1378,11 @@ impl Player {
                     .child(div().h(px(1.)).my_1().bg(t().border()))
                     .child(self.toggle_row("Normalize loudness", norm, v(&["af", "toggle", "@norm:lavfi=[loudnorm]"]), cx))
                     .child(self.toggle_row("Mute", m.get_flag("mute"), v(&["cycle", "mute"]), cx))
+                    .child(div().h(px(1.)).my_1().bg(t().border()))
+                    .child(Self::pop_note("EQUALIZER"))
+                    .child(div().flex().flex_wrap().gap_1().px(px(POP_INSET)).pb_2().children(AUDIO_EQ.map(|(label, _)| {
+                        chip(SharedString::from(format!("eq-{label}")), label, self.eq == label).on_click(cx.listener(move |this, _, _, _| this.set_eq(label)))
+                    })))
             }
             Pop::Video => {
                 let rotate = USER_ROTATE.load(Ordering::Relaxed);
@@ -1355,8 +1413,17 @@ impl Player {
                     )
                     .children(decoder.map(|d| Self::pop_note(&d)))
             }
-            Pop::Picture => body
-                .child(self.pop_header("Picture", cx))
+            Pop::Picture => {
+                let now = ["brightness", "contrast", "saturation", "gamma"].map(|p| m.get_f64(p).unwrap_or(0.).round() as i64);
+                body.child(self.pop_header("Picture", cx))
+                .child(Self::pop_note("PRESETS"))
+                .child(div().flex().flex_wrap().gap_1().px(px(POP_INSET)).pb_2().children(PICTURE_PRESETS.map(|(label, vals)| {
+                    chip(SharedString::from(format!("pp-{label}")), label, now == vals).on_click(cx.listener(move |this, _, _, _| {
+                        for (prop, v) in ["brightness", "contrast", "saturation", "gamma"].iter().zip(vals) {
+                            this.mpv.cmd(&["set", prop, &v.to_string()]);
+                        }
+                    }))
+                })))
                 .children(PICTURE.map(|sl| self.slider_row(sl, cx)))
                 .child(
                     Self::pop_row("pic-reset")
@@ -1368,7 +1435,8 @@ impl Player {
                                 this.mpv.cmd(&["set", sl.prop, &sl.default.to_string()]);
                             }
                         })),
-                ),
+                )
+            }
             Pop::Sync => body
                 .child(self.pop_header("Sync", cx))
                 .child(self.slider_row(AUDIO_DELAY, cx))
@@ -2227,6 +2295,8 @@ mod tests {
         assert!((r("2.35:1").unwrap() - 2.35).abs() < 1e-9);
         assert_eq!(r("no"), None);
         assert_eq!(r("-2.000000"), None, "default as mpv reports it");
+        assert_eq!(super::eq_filter("Flat"), None);
+        assert_eq!(super::eq_filter("Bass boost").unwrap(), "@zymeq:lavfi=[equalizer=f=70:width_type=o:width=1:g=8,equalizer=f=180:width_type=o:width=1:g=6,equalizer=f=320:width_type=o:width=1:g=4,equalizer=f=600:width_type=o:width=1:g=2]");
         assert_eq!(super::breakable_path(std::path::Path::new("/a/b")), "/\u{200B}a/\u{200B}b");
         let a = picture_args([0, 0, 0, 0, 0]);
         assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.000", "1.000", "1.000", "0.0"], "0 = unchanged picture");
