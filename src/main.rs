@@ -111,11 +111,13 @@ const AUDIO_EQ: [(&str, &[(u32, i32)]); 12] = [
     ("Dance", &[(70, 6), (180, 5), (320, 2), (600, 0), (1000, -2), (3000, 2), (6000, 3), (12000, 4), (14000, 5), (16000, 5)]),
 ];
 
-/// `af add` argument for EQ preset `name`; None for Flat (or an unknown name).
+/// `af add` argument for EQ preset `name`; None for Flat (or an unknown name). Boosts of up to
+/// +8 dB clip loud tracks, so a limiter ends the chain: peaks stay just under full scale, and
+/// `level=disabled` keeps it from raising quiet parts.
 fn eq_filter(name: &str) -> Option<String> {
     let (_, bands) = AUDIO_EQ.iter().find(|(n, _)| *n == name)?;
     let chain: Vec<String> = bands.iter().map(|(f, g)| format!("equalizer=f={f}:width_type=o:width=1:g={g}")).collect();
-    (!chain.is_empty()).then(|| format!("@zymeq:lavfi=[{}]", chain.join(",")))
+    (!chain.is_empty()).then(|| format!("@zymeq:lavfi=[{},alimiter=limit=0.97:level=disabled]", chain.join(",")))
 }
 
 /// Aspect as a number: "16:9", "2.35:1" or what mpv reports back ("1.777778"); None = the
@@ -2300,7 +2302,7 @@ mod tests {
         assert_eq!(r("no"), None);
         assert_eq!(r("-2.000000"), None, "default as mpv reports it");
         assert_eq!(super::eq_filter("Flat"), None);
-        assert_eq!(super::eq_filter("Bass boost").unwrap(), "@zymeq:lavfi=[equalizer=f=70:width_type=o:width=1:g=8,equalizer=f=180:width_type=o:width=1:g=6,equalizer=f=320:width_type=o:width=1:g=4,equalizer=f=600:width_type=o:width=1:g=2]");
+        assert_eq!(super::eq_filter("Bass boost").unwrap(), "@zymeq:lavfi=[equalizer=f=70:width_type=o:width=1:g=8,equalizer=f=180:width_type=o:width=1:g=6,equalizer=f=320:width_type=o:width=1:g=4,equalizer=f=600:width_type=o:width=1:g=2,alimiter=limit=0.97:level=disabled]");
         assert_eq!(super::breakable_path(std::path::Path::new("/a/b")), "/\u{200B}a/\u{200B}b");
         let a = picture_args([0, 0, 0, 0, 0]);
         assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.000", "1.000", "1.000", "0.0"], "0 = unchanged picture");
