@@ -58,7 +58,13 @@ Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: none; ValueName
 Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media"; ValueType: string; ValueName: ""; ValueData: "Media file"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\zym-media-player.ico"
 Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-media-player.exe"" ""%1"""
+; Name and icon in "Open with": the exe has no icon resource of its own, so say both here.
+Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Zym Media Player"
+Root: HKA; Subkey: "Software\Classes\ZymPlayer.Media\Application"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\zym-media-player.ico"
 Root: HKA; Subkey: "Software\Classes\Applications\zym-media-player.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zym-media-player.exe"" ""%1"""; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\zym-media-player.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Zym Media Player"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\zym-media-player.exe\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\zym-media-player.ico"
+Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationIcon"; ValueData: "{app}\zym-media-player.ico"
 Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "Zym Media Player"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\ZymPlayer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "Lightweight media player built on mpv"
 Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "Zym Media Player"; ValueData: "Software\ZymPlayer\Capabilities"; Flags: uninsdeletevalue
