@@ -130,11 +130,6 @@ fn aspect_ratio(s: &str) -> Option<f64> {
     (r.is_finite() && r > 0.).then_some(r)
 }
 
-/// A path that can wrap: a zero-width space after each separator (paths have no spaces).
-fn breakable_path(p: &std::path::Path) -> String {
-    p.display().to_string().chars().flat_map(|c| if matches!(c, '/' | '\\') { vec![c, '\u{200B}'] } else { vec![c] }).collect()
-}
-
 /// What's decoding the video right now, worded so "hardware decoding on" + CPU decoding makes sense:
 /// the GPU can't decode every codec (e.g. AV1 or VP9 on older cards) and mpv then falls back to the CPU.
 fn decoder_note(hw_on: bool, idle: bool, current: Option<&str>, codec: Option<&str>) -> Option<String> {
@@ -1526,14 +1521,6 @@ impl Player {
                     .child(div().text_color(t().muted()).pb_2().child("A lightweight media player built on mpv and GPUI."))
                     .child(line("Playback engine", mpv_v))
                     .child(line("FFmpeg", ff_v))
-                    // Paths have no spaces to wrap at: label above, path below, breakable after each separator.
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_color(t().muted()).child("Plugins"))
-                            .child(div().text_xs().min_w_0().child(breakable_path(&plugins_dir()))),
-                    )
                     .child(self.update_row(cx))
                     .child(
                         div().pt_3().flex().justify_end().child(
@@ -2303,7 +2290,6 @@ mod tests {
         assert_eq!(r("-2.000000"), None, "default as mpv reports it");
         assert_eq!(super::eq_filter("Flat"), None);
         assert_eq!(super::eq_filter("Bass boost").unwrap(), "@zymeq:lavfi=[equalizer=f=70:width_type=o:width=1:g=8,equalizer=f=180:width_type=o:width=1:g=6,equalizer=f=320:width_type=o:width=1:g=4,equalizer=f=600:width_type=o:width=1:g=2,alimiter=limit=0.97:level=disabled]");
-        assert_eq!(super::breakable_path(std::path::Path::new("/a/b")), "/\u{200B}a/\u{200B}b");
         let a = picture_args([0, 0, 0, 0, 0]);
         assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.000", "1.000", "1.000", "0.0"], "0 = unchanged picture");
         let a = picture_args([100, -100, 100, 50, -50]);
