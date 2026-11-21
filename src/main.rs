@@ -1291,10 +1291,15 @@ impl Player {
 
     /// Radio entry: ✓ when selected, runs `cmd` on click.
     fn radio_row(&self, id: String, label: impl Into<SharedString>, selected: bool, cmd: Vec<String>, cx: &mut Context<Self>) -> Stateful<Div> {
+        Self::radio_pick(id, label, selected, cx, move |this| this.mpv.cmd(&cmd.iter().map(String::as_str).collect::<Vec<_>>()))
+    }
+
+    /// ✓ row that runs `pick` when clicked.
+    fn radio_pick(id: String, label: impl Into<SharedString>, selected: bool, cx: &mut Context<Self>, pick: impl Fn(&mut Self) + 'static) -> Stateful<Div> {
         Self::pop_row(id)
             .child(div().w(px(16.)).text_color(t().accent()).child(if selected { "✓" } else { "" }))
             .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(label.into()))
-            .on_click(cx.listener(move |this, _, _, _| this.mpv.cmd(&cmd.iter().map(String::as_str).collect::<Vec<_>>())))
+            .on_click(cx.listener(move |this, _, _, _| pick(this)))
     }
 
     /// Label + switch.
@@ -1380,9 +1385,7 @@ impl Player {
                     .child(self.toggle_row("Mute", m.get_flag("mute"), v(&["cycle", "mute"]), cx))
                     .child(div().h(px(1.)).my_1().bg(t().border()))
                     .child(Self::pop_note("EQUALIZER"))
-                    .child(div().flex().flex_wrap().gap_1().px(px(POP_INSET)).pb_2().children(AUDIO_EQ.map(|(label, _)| {
-                        chip(SharedString::from(format!("eq-{label}")), label, self.eq == label).on_click(cx.listener(move |this, _, _, _| this.set_eq(label)))
-                    })))
+                    .children(AUDIO_EQ.map(|(label, _)| Self::radio_pick(format!("eq-{label}"), label, self.eq == label, cx, move |this| this.set_eq(label))))
             }
             Pop::Video => {
                 let rotate = USER_ROTATE.load(Ordering::Relaxed);
@@ -1417,13 +1420,14 @@ impl Player {
                 let now = ["brightness", "contrast", "saturation", "gamma"].map(|p| m.get_f64(p).unwrap_or(0.).round() as i64);
                 body.child(self.pop_header("Picture", cx))
                 .child(Self::pop_note("PRESETS"))
-                .child(div().flex().flex_wrap().gap_1().px(px(POP_INSET)).pb_2().children(PICTURE_PRESETS.map(|(label, vals)| {
-                    chip(SharedString::from(format!("pp-{label}")), label, now == vals).on_click(cx.listener(move |this, _, _, _| {
+                .children(PICTURE_PRESETS.map(|(label, vals)| {
+                    Self::radio_pick(format!("pp-{label}"), label, now == vals, cx, move |this| {
                         for (prop, v) in ["brightness", "contrast", "saturation", "gamma"].iter().zip(vals) {
                             this.mpv.cmd(&["set", prop, &v.to_string()]);
                         }
-                    }))
-                })))
+                    })
+                }))
+                .child(div().h(px(1.)).my_1().bg(t().border()))
                 .children(PICTURE.map(|sl| self.slider_row(sl, cx)))
                 .child(
                     Self::pop_row("pic-reset")
