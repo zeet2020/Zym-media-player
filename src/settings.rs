@@ -265,9 +265,17 @@ pub struct SettingsPanel {
     log_filter: crate::log::Level,
     /// Script toggles only take effect on restart (mpv can't unload a script).
     restart_needed: bool,
+    /// Content plugin whose Remove was clicked once (second click removes).
+    confirm_remove: Option<String>,
 }
 
 impl SettingsPanel {
+    /// Re-read the content plugin list (after an install or removal).
+    pub fn reload_content(&mut self) {
+        self.content = sources::load_all().iter().map(|p| (p.manifest.id.clone(), p.manifest.name.clone())).collect();
+        self.confirm_remove = None;
+    }
+
     /// Text behind the Settings fields (yt-dlp path, mpv text options); a draft starts as the saved value.
     pub fn field_text(&mut self, f: &Field) -> Option<&mut String> {
         match f {
@@ -296,6 +304,7 @@ impl Player {
             log_filter: crate::log::Level::Debug,
             prefs: player_prefs(),
             restart_needed: false,
+            confirm_remove: None,
         });
         self.probe_ytdlp(cx);
     }
@@ -429,17 +438,35 @@ impl Player {
         div()
             .child(heading("CONTENT PLUGINS"))
             .child(note("Feed the Explorer, in this order (hover a row for ↑ ↓). A disabled plugin is hidden there; its connections are kept."))
+            .child(
+                div().px_4().pb_2().child(
+                    crate::panel::button("plugin-install", "Install plugin…", false).on_click(cx.listener(|this, _, _, cx| this.pick_plugin_package(cx))),
+                ),
+            )
             .children(s.content.iter().enumerate().map(|(i, (id, name))| {
                 let on = !off_content.contains(id);
-                let id = id.clone();
+                let toggle_id = id.clone();
                 let row = switch_row(format!("content-{id}"), name, None, on).flex_1().min_w_0().on_click(cx.listener(move |this, _, _, _| {
-                    let list = set_disabled("content", &id, on);
+                    let list = set_disabled("content", &toggle_id, on);
                     if let Some(s) = this.settings.as_mut() {
                         s.off_content = list;
                     }
                     this.explorer.loaded = false; // re-read the plugin list next time the Explorer opens
                 }));
-                div().group("plrow").flex().items_center().pr_2().child(row).children(crate::playlists::move_buttons("content", i, s.content.len(), cx, Player::content_move))
+                // Plugins the user installed can be removed (bundled ones only disabled).
+                let remove = crate::install::user_installed(&id).then(|| {
+                    let id2 = id.clone();
+                    if s.confirm_remove.as_deref() == Some(id.as_str()) {
+                        crate::panel::confirm_button(SharedString::from(format!("rm-ok-{id}")), "Remove?").on_click(cx.listener(move |this, _, _, _| this.remove_plugin(&id2)))
+                    } else {
+                        crate::panel::row_icon(format!("rm-{id}"), "trash").on_click(cx.listener(move |this, _, _, _| {
+                            if let Some(s) = this.settings.as_mut() {
+                                s.confirm_remove = Some(id2.clone());
+                            }
+                        }))
+                    }
+                });
+                div().group("plrow").flex().items_center().pr_2().child(row).children(crate::playlists::move_buttons("content", i, s.content.len(), cx, Player::content_move)).children(remove)
             }))
             .when(s.content.is_empty(), |d| d.child(note("None installed.")))
             .child(heading("SCRIPTS"))

@@ -6,6 +6,7 @@
 
 mod explorer;
 mod infocard;
+mod install;
 mod log;
 mod menu;
 mod mpvopts;
@@ -679,6 +680,8 @@ pub struct Player {
     panel: Panel,
     menu: Option<MenuState>,
     about: bool,
+    /// Plugin install dialog (install.rs).
+    install: Option<install::Dialog>,
     pop: Option<Pop>,
     slider_drag: Option<Slider>,
     /// Controls opacity 0..1, eased toward shown/hidden each frame.
@@ -843,6 +846,7 @@ impl Player {
             panel: if files.len() > 1 { Panel::Playlist } else { Panel::None }, // empty start: nothing open
             menu: None,
             about: false,
+            install: None,
             pop: None,
             slider_drag: None,
             ui_alpha: 1.0,
@@ -1040,9 +1044,10 @@ impl Player {
             cx.notify();
             return;
         }
-        if ks.key == "escape" && (self.menu.is_some() || self.about) {
+        if ks.key == "escape" && (self.menu.is_some() || self.about || self.install.is_some()) {
             self.menu = None;
             self.about = false;
+            self.install = None;
             return;
         }
         if ks.key == "escape" && self.any_overlay() {
@@ -2137,11 +2142,13 @@ impl Render for Player {
                 this.text_drag = false;
                 this.end_panel_drag();
             }))
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 for p in paths.paths() {
                     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
                     let path = p.to_string_lossy();
-                    if SUB_EXTS.contains(&ext.as_str()) {
+                    if ext == "zym" {
+                        this.open_plugin_package(p.clone(), cx); // a content plugin: offer to install it
+                    } else if SUB_EXTS.contains(&ext.as_str()) {
                         this.mpv.cmd(&["sub-add", &path, "select"]);
                     } else {
                         this.mpv.load(&path, "append-play");
@@ -2167,6 +2174,7 @@ impl Render for Player {
                 self.render_menu(state, &items, window, cx)
             }))
             .when(self.about, |d| d.child(self.about_dialog(cx)))
+            .children(self.install_dialog(cx))
     }
 }
 

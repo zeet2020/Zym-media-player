@@ -22,12 +22,16 @@ smallvec = { version = "1", default-features = false }
 suppaftp = "13.0.0"
 tokio = { version = "1.54.1", features = ["rt", "net", "time", "sync"] }
 ureq = "3"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 # gpui 0.2.2 -> zed-async-tar -> xattr 0.2.3 breaks on libc >= 0.2.191 (ENOATTR removed)
 [patch.crates-io]
 xattr = { path = "vendor/xattr" }
 # extism 1.13's HTTP host fn rejects non-standard methods (PROPFIND) via ureq 3 defaults; 2-line patch.
 extism = { path = "vendor/extism" }
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.20"
 
 # Linux packages (built in .github/workflows/release.yml).
 [package.metadata.deb]
