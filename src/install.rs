@@ -117,17 +117,35 @@ pub fn install(pkg: &Package) -> Result<(), String> {
     Ok(())
 }
 
+/// The user's folder holding this plugin. Usually `sources/<id>/`, but a plugin copied in by hand
+/// can sit in a folder with any name (the loader accepts it), so fall back to matching manifest ids.
+fn user_folder(id: &str) -> Option<PathBuf> {
+    if !valid_id(id) {
+        return None;
+    }
+    let is_plugin = |d: &PathBuf| d.join("plugin.wasm").is_file();
+    let named = user_dir(id);
+    if is_plugin(&named) {
+        return Some(named);
+    }
+    std::fs::read_dir(sources_dir()).ok()?.flatten().map(|e| e.path()).find(|d| {
+        is_plugin(d)
+            && std::fs::read(d.join("manifest.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .is_some_and(|m| m["id"] == id)
+    })
+}
+
 /// Installed by the user (removable), as opposed to bundled with the player.
 pub fn user_installed(id: &str) -> bool {
-    valid_id(id) && user_dir(id).join("plugin.wasm").is_file()
+    user_folder(id).is_some()
 }
 
 /// Remove a user-installed plugin and its connections.
 pub fn remove(id: &str) -> Result<(), String> {
-    if !user_installed(id) {
-        return Err("only plugins you installed can be removed".into());
-    }
-    std::fs::remove_dir_all(user_dir(id)).map_err(|e| e.to_string())
+    let dir = user_folder(id).ok_or("only plugins you installed can be removed")?;
+    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------ UI

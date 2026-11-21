@@ -434,10 +434,10 @@ impl Player {
     }
 
     fn plugins_tab(&self, s: &SettingsPanel, cx: &mut Context<Self>) -> Div {
-        let (off_content, off_scripts) = (&s.off_content, &s.off_scripts);
+        let off_content = &s.off_content;
         div()
             .child(heading("CONTENT PLUGINS"))
-            .child(note("Feed the Explorer, in this order (hover a row for ↑ ↓). A disabled plugin is hidden there; its connections are kept."))
+            .child(note("Feed the Explorer, in this order (↑ ↓ to reorder). A disabled plugin is hidden there; its connections are kept."))
             .child(
                 div().px_4().pb_2().child(
                     crate::panel::button("plugin-install", "Install plugin…", false).on_click(cx.listener(|this, _, _, cx| this.pick_plugin_package(cx))),
@@ -454,7 +454,8 @@ impl Player {
                     this.explorer.loaded = false; // re-read the plugin list next time the Explorer opens
                 }));
                 // Plugins the user installed can be removed (bundled ones only disabled).
-                let remove = crate::install::user_installed(&id).then(|| {
+                // Every row keeps the slot so the toggles line up.
+                let remove = div().w(px(76.)).flex().flex_none().justify_end().children(crate::install::user_installed(&id).then(|| {
                     let id2 = id.clone();
                     if s.confirm_remove.as_deref() == Some(id.as_str()) {
                         crate::panel::confirm_button(SharedString::from(format!("rm-ok-{id}")), "Remove?").on_click(cx.listener(move |this, _, _, _| this.remove_plugin(&id2)))
@@ -465,25 +466,15 @@ impl Player {
                             }
                         }))
                     }
-                });
-                div().group("plrow").flex().items_center().pr_2().child(row).children(crate::playlists::move_buttons("content", i, s.content.len(), cx, Player::content_move)).children(remove)
+                }));
+                div().group("plrow").flex().items_center().px_2().children({
+                    // Always shown here (playlists show them on hover); an arrow that can't move is dimmed.
+                    let [up, down] = crate::playlists::move_buttons("content", i, s.content.len(), cx, Player::content_move);
+                    let dim = |b: Stateful<Div>, up: bool| if crate::playlists::move_target(i, up, s.content.len()).is_some() { b.visible() } else { b.visible().opacity(0.3) };
+                    [dim(up, true), dim(down, false)]
+                }).child(row).child(remove)
             }))
             .when(s.content.is_empty(), |d| d.child(note("None installed.")))
-            .child(heading("SCRIPTS"))
-            .child(note(&format!("mpv Lua/JS scripts from {}", crate::plugins_dir().display())))
-            .children(s.scripts.iter().map(|name| {
-                let on = !off_scripts.contains(name);
-                let name = name.clone();
-                switch_row(format!("script-{name}"), &name, None, on).on_click(cx.listener(move |this, _, _, _| {
-                    let list = set_disabled("scripts", &name, on);
-                    if let Some(s) = this.settings.as_mut() {
-                        s.off_scripts = list;
-                        s.restart_needed = true;
-                    }
-                }))
-            }))
-            .when(s.scripts.is_empty(), |d| d.child(note("None installed.")))
-            .when(s.restart_needed, |d| d.child(div().px_4().pt_2().text_color(t().accent()).child(format!("Restart {} to apply script changes.", crate::APP_NAME))))
     }
 
     fn logs_tab(&self, s: &SettingsPanel, cx: &mut Context<Self>) -> Div {
@@ -550,7 +541,26 @@ impl Player {
         div()
             .child(self.decoding_and_ytdl(s, cx))
             .child(self.mpv_options(&s.prefs.mpv, &s.mpv_text, cx))
+            .child(self.scripts_section(s, cx))
             .child(self.mpv_conf_section(s, cx))
+    }
+
+    fn scripts_section(&self, s: &SettingsPanel, cx: &mut Context<Self>) -> Div {
+        div()
+            .child(heading("SCRIPTS"))
+            .child(note(&format!("mpv Lua/JS scripts from {}. Applies after restarting the player.", crate::plugins_dir().display())))
+            .children(s.scripts.iter().map(|name| {
+                let on = !s.off_scripts.contains(name);
+                let name = name.clone();
+                switch_row(format!("script-{name}"), &name, None, on).on_click(cx.listener(move |this, _, _, _| {
+                    let list = set_disabled("scripts", &name, on);
+                    if let Some(s) = this.settings.as_mut() {
+                        s.off_scripts = list;
+                        s.restart_needed = true;
+                    }
+                }))
+            }))
+            .when(s.scripts.is_empty(), |d| d.child(note("None installed.")))
     }
 
     fn mpv_conf_section(&self, s: &SettingsPanel, cx: &mut Context<Self>) -> Div {

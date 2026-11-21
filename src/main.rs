@@ -695,8 +695,10 @@ pub struct Player {
     /// A text box is being drag-selected.
     pub text_drag: bool,
     /// Big panel width set by dragging its edge (None = default), and a drag in progress.
-    pub panel_w: Option<f32>,
-    pub panel_drag: bool,
+    /// Dragged width of each big panel, by its id ("explorer", "playlists", "settings").
+    pub panel_w: std::collections::HashMap<String, f32>,
+    /// The big panel whose edge is being dragged.
+    pub panel_drag: Option<&'static str>,
     /// Details cards from content plugins, by stream URL (= mpv playlist filename).
     pub infos: std::collections::HashMap<String, sources::Info>,
     /// Music visualizer (audio-only files).
@@ -856,8 +858,8 @@ impl Player {
             pl: Default::default(),
             caret: None,
             text_drag: false,
-            panel_w: settings::get("ui").and_then(|u| u.get("panel_width")?.as_f64()).map(|w| w as f32),
-            panel_drag: false,
+            panel_w: settings::get("panel_widths").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
+            panel_drag: None,
             infos: Default::default(),
             viz: visualizer::Viz::new(),
             pic: None,
@@ -1976,7 +1978,8 @@ impl Render for Player {
             .flex()
             .items_start()
             .gap_2()
-            .child(div().flex_1().min_w_0().pt_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(self.title.clone()))
+            // Windowed, the OS title bar already shows it; only fullscreen needs it here.
+            .child(div().flex_1().min_w_0().pt_1().overflow_hidden().text_ellipsis().whitespace_nowrap().when(window.is_fullscreen(), |d| d.child(self.title.clone())))
             .children(self.info_button(cx));
 
         let count = self.mpv.get_i64("playlist-count").unwrap_or(0) as usize;
@@ -2125,8 +2128,8 @@ impl Render for Player {
                 if let Some(sl) = this.slider_drag {
                     this.set_slider(&sl, e.position.x.into(), window);
                 }
-                if this.panel_drag {
-                    this.drag_panel_edge(e.position.x.into(), window);
+                if let Some(id) = this.panel_drag {
+                    this.drag_panel_edge(id, e.position.x.into(), window);
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| {

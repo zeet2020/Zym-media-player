@@ -27,9 +27,9 @@ fn clamp_dragged(w: f32, window_w: f32) -> f32 {
 }
 
 impl Player {
-    fn big_panel_width(&self, window: &Window) -> f32 {
+    fn big_panel_width(&self, id: &str, window: &Window) -> f32 {
         let vw = f32::from(window.viewport_size().width);
-        match self.panel_w {
+        match self.panel_w.get(id).copied() {
             Some(w) => clamp_dragged(w, vw),
             None => fit_width(vw, 0.70, 560., 1040.),
         }
@@ -37,21 +37,22 @@ impl Player {
 
     /// Mouse moved while dragging a big panel's left edge (from the root mouse-move handler).
     /// Stored already clamped, so the saved width is one that fit the window it was set in.
-    pub fn drag_panel_edge(&mut self, x: f32, window: &Window) {
+    pub fn drag_panel_edge(&mut self, id: &str, x: f32, window: &Window) {
         let vw = f32::from(window.viewport_size().width);
-        self.panel_w = Some(clamp_dragged(vw - PANEL_GAP - x, vw));
+        self.panel_w.insert(id.to_string(), clamp_dragged(vw - PANEL_GAP - x, vw));
     }
 
     pub fn end_panel_drag(&mut self) {
-        if std::mem::take(&mut self.panel_drag) {
-            crate::settings::put("ui", serde_json::json!({ "panel_width": self.panel_w }));
+        if self.panel_drag.take().is_some() {
+            crate::settings::put("panel_widths", serde_json::json!(self.panel_w));
         }
     }
 
     /// Large translucent side panel: video stays visible, controls stay usable. Drag its left
-    /// edge (grip) to resize; the width is shared by all big panels and remembered. Double-click
-    /// the edge to reset.
+    /// edge (grip) to resize; each panel remembers its own width (Explorer wide, Playlists
+    /// narrow, …). Double-click the edge to reset that panel.
     pub fn big_panel(&self, id: &'static str, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
+        let dragging = self.panel_drag == Some(id);
         let edge = div()
             .id("panel-edge")
             .absolute()
@@ -64,22 +65,35 @@ impl Player {
             .justify_center()
             .cursor(gpui::CursorStyle::ResizeLeftRight)
             .group("panel-edge")
-            .hover(|s| s.bg(t().accent_a(0x40)))
-            .when(self.panel_drag, |d| d.bg(t().accent_a(0x40)))
+            // Highlight follows the panel's rounded corners (rounded_xl = 12 px, minus the 1 px
+            // border). GPUI caps a radius at half the shape's width, so a 10 px strip can't take
+            // 11 px: draw it 22 px wide and let this 10 px edge clip off the right part.
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(22.))
+                    .rounded_l(px(11.))
+                    .when(dragging, |d| d.bg(t().accent_a(0x40)))
+                    .group_hover("panel-edge", |s| s.bg(t().accent_a(0x40))),
+            )
             // Grip: always visible, so the edge reads as draggable.
             .child(
                 div()
                     .w(px(4.))
                     .h(px(40.))
                     .rounded_full()
-                    .bg(if self.panel_drag { t().accent() } else { t().dim() })
+                    .bg(if dragging { t().accent() } else { t().dim() })
                     .group_hover("panel-edge", |s| s.bg(t().accent())),
             )
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                this.panel_drag = true;
+                this.panel_drag = Some(id);
                 if e.click_count >= 2 {
-                    this.panel_w = None; // back to the default width
+                    this.panel_w.remove(id); // back to the default width
                     this.end_panel_drag();
                 }
             }));
@@ -89,7 +103,8 @@ impl Player {
             .top(px(48.))
             .right(px(PANEL_GAP))
             .bottom(px(PANEL_V))
-            .w(px(self.big_panel_width(window)))
+            .w(px(self.big_panel_width(id, window)))
+            .pl(px(10.)) // the edge's own strip: content starts after it, so its highlight covers nothing
             .flex()
             .rounded_xl()
             .overflow_hidden()
