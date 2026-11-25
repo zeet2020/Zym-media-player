@@ -81,9 +81,27 @@ fn rotate() -> Option<(std::fs::File, u64)> {
     std::fs::File::create(file_path()).ok().map(|f| (f, 0))
 }
 
+/// GPUI and other crates report through the `log` facade; their warnings and errors land here too
+/// (e.g. GPUI's "GPU hung"), otherwise they'd be lost.
+struct Facade;
+impl ::log::Log for Facade {
+    fn enabled(&self, m: &::log::Metadata) -> bool {
+        m.level() <= ::log::Level::Warn
+    }
+    fn log(&self, r: &::log::Record) {
+        if self.enabled(r.metadata()) {
+            add(if r.level() == ::log::Level::Error { Level::Error } else { Level::Warn }, r.target(), &r.args().to_string());
+        }
+    }
+    fn flush(&self) {}
+}
+
 /// Start this run's log file (the previous run's becomes previous.log). Logging works without it.
 pub fn init() {
     start();
+    if ::log::set_logger(&Facade).is_ok() {
+        ::log::set_max_level(::log::LevelFilter::Warn);
+    }
     *FILE.lock().unwrap_or_else(PoisonError::into_inner) = rotate();
     info("app", &format!("{} {} started", crate::APP_NAME, crate::VERSION));
 }

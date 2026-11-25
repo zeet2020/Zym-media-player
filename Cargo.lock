@@ -9891,6 +9891,7 @@ dependencies = [
  "gpui",
  "image",
  "libmpv2-sys",
+ "log",
  "russh",
  "russh-sftp",
  "serde",

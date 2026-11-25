@@ -44,7 +44,7 @@ use menu::{Item, MenuState, mpv as mcmd, sub, ui};
 use mpv::{IN_FLIGHT, LAST_ERROR, Latest, NEW_FILE, USER_ROTATE, VIEW_PX, VideoSize, Wake, spawn_event_thread, spawn_render_thread};
 pub use mpv::Mpv;
 
-// ---- debug watchdog (ZYM_DEBUG): which sync mpv call, if any, the UI thread is stuck in.
+// ---- watchdog: logs UI stalls (and which sync mpv call, if any, the UI thread is stuck in).
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 
 const PIC_PROPS: [&str; 5] = ["brightness", "contrast", "saturation", "gamma", "hue"];
@@ -114,20 +114,78 @@ fn decoder_note(hw_on: bool, idle: bool, current: Option<&str>, codec: Option<&s
     })
 }
 
+/// The UI tick runs every 16 ms; this long without one means the main thread is stuck for good.
+const KILL_AFTER_STALLED_SECS: u32 = 20;
+
+/// Logs UI stalls (with what the main thread is blocked on) and ends a player that's frozen for good.
 fn spawn_watchdog() {
     std::thread::spawn(|| {
         let pid = std::process::id();
         let mut last = 0;
+        let mut stalled = false;
+        let mut stalled_checks = 0u32; // counted in checks, not wall time: a suspend doesn't count
         loop {
             std::thread::sleep(Duration::from_millis(1000));
             let hb = HEARTBEAT.load(Ordering::Relaxed);
+            stalled_checks = if hb == last && hb > 0 { stalled_checks + 1 } else { 0 };
+            if stalled_checks >= KILL_AFTER_STALLED_SECS {
+                // The main thread is stuck for good (seen: GPUI waiting forever on a hung NVIDIA GPU, which
+                // froze the whole desktop and ignored the close button). Ending the process frees our GPU
+                // context so the driver and desktop can recover. Not exit(): exit handlers would
+                // wait on the same GPU. _exit, not abort(): no core dump of a multi-GB process either.
+                log::error("watchdog", &format!("UI frozen for {stalled_checks} s; ending the player"));
+                unsafe extern "C" {
+                    fn _exit(status: i32) -> !;
+                }
+                unsafe { _exit(1) };
+            }
             if hb == last && hb > 0 {
                 let wchan = std::fs::read_to_string(format!("/proc/self/task/{pid}/wchan")).unwrap_or_default();
-                log::error("watchdog", &format!("UI tick stalled; in-flight mpv call: {:?}; main wchan: {wchan}", IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)));
+                // Once per stall: the files the main thread is polling (/dev/nvidia* = GPU wait, socket = X server).
+                let fds = if stalled { String::new() } else { format!("; polling: {}", main_poll_fds(pid)) };
+                log::error("watchdog", &format!("UI tick stalled; in-flight mpv call: {:?}; main wchan: {wchan}{fds}", IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)));
             }
+            stalled = hb == last && hb > 0;
             last = hb;
         }
     });
+}
+
+/// Targets of the fds the main thread is blocked in poll()/ppoll() on, read from /proc (our own process,
+/// so no ptrace needed). Debug aid for the watchdog; "?" where it can't tell.
+fn main_poll_fds(tid: u32) -> String {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(sc) = std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) else { return "?".into() };
+        let f: Vec<&str> = sc.split_whitespace().collect();
+        let hex = |i: usize| f.get(i).and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+        // x86_64: 7 = poll, 271 = ppoll; args: struct pollfd *fds, nfds.
+        let (Some("7" | "271"), Some(addr), Some(n)) = (f.first().copied(), hex(1), hex(2)) else { return format!("not in poll (syscall {sc:?})") };
+        let mut buf = vec![0u8; 8 * n.min(16) as usize];
+        let read = std::fs::File::open("/proc/self/mem").and_then(|mut m| {
+            m.seek(SeekFrom::Start(addr))?;
+            m.read_exact(&mut buf)
+        });
+        if read.is_err() {
+            return "?".into();
+        }
+        buf.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|p| {
+                let fd = i32::from_ne_bytes([p[0], p[1], p[2], p[3]]);
+                let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).map(|t| t.display().to_string()).unwrap_or_else(|_| "?".into());
+                format!("{fd}={target}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = tid;
+        "?".into()
+    }
 }
 
 /// <config>/zym-player — %APPDATA% on Windows, $XDG_CONFIG_HOME or ~/.config elsewhere. Settings,
@@ -368,7 +426,7 @@ impl Player {
             stopped_at: None,
             opening: None,
         };
-        if std::env::var_os("ZYM_DEBUG").is_some() {
+        {
             spawn_watchdog();
         }
         // Debug: play a source item through the same path as a click, no input needed. Value = item id.
@@ -1286,14 +1344,15 @@ impl Render for Player {
                 }
             }))
             .child(match &self.frame {
-                _ if let Some(name) = &loading => div()
+                // Not an `if let` guard: CI builds with Rust 1.93, where those aren't stable yet.
+                _ if loading.is_some() => div()
                     .flex()
                     .flex_col()
                     .items_center()
                     .gap_2()
                     .px_8()
                     .text_center()
-                    .child(div().text_lg().text_color(rgb(0xd0d0d0)).child(name.clone()))
+                    .child(div().text_lg().text_color(rgb(0xd0d0d0)).child(loading.clone().unwrap_or_default()))
                     .child(div().text_color(rgb(0x808080)).child("Loading…"))
                     .into_any_element(),
                 Some(f) => img(f.clone()).size_full().into_any_element(),
@@ -1760,6 +1819,14 @@ fn main() {
     #[cfg(target_os = "linux")]
     drop_dead_wayland_display();
     let files: Vec<String> = std::env::args().skip(1).collect();
+    match files.first().map(String::as_str) {
+        Some("-V" | "--version") => return println!("{APP_NAME} {VERSION}"),
+        Some("-h" | "--help") => {
+            return println!("{APP_NAME} {VERSION}\n\nUsage: zym-media-player [FILE | FOLDER | PLAYLIST.m3u]...\n\n  -h, --help     show this help\n  -V, --version  show version\n\nPlugins: {}", plugins_dir().display());
+        }
+        _ => {}
+    }
+    // After the flags above: a --version check mustn't rotate away the last session's log.
     log::init();
     // Panics otherwise only reach stderr. Append straight to the file, not via log::add: a panic
     // while the log mutex is held would deadlock here instead of crashing.
@@ -1772,13 +1839,6 @@ fn main() {
         default_hook(info);
     }));
     theme::load();
-    match files.first().map(String::as_str) {
-        Some("-V" | "--version") => return println!("{APP_NAME} {VERSION}"),
-        Some("-h" | "--help") => {
-            return println!("{APP_NAME} {VERSION}\n\nUsage: zym-media-player [FILE | FOLDER | PLAYLIST.m3u]...\n\n  -h, --help     show this help\n  -V, --version  show version\n\nPlugins: {}", plugins_dir().display());
-        }
-        _ => {}
-    }
     Application::new().with_assets(Assets).with_http_client(Arc::new(sources::ImageFetcher)).run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1100.), px(650.)), cx);
         cx.open_window(
@@ -1829,5 +1889,30 @@ mod tests {
         assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.000", "1.000", "1.000", "0.0"], "0 = unchanged picture");
         let a = picture_args([100, -100, 100, 50, -50]);
         assert_eq!([a[0].1.as_str(), a[1].1.as_str(), a[2].1.as_str(), a[3].1.as_str(), a[4].1.as_str()], ["0.500", "0.000", "2.000", "2.000", "-90.0"]);
+    }
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+mod watchdog_tests {
+    #[test]
+    fn names_the_fds_a_thread_is_polling() {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            fn poll(fds: *mut [i32; 2], nfds: u64, timeout: i32) -> i32;
+            fn gettid() -> i32;
+        }
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let fd = a.as_raw_fd();
+        let (tx, rx) = std::sync::mpsc::channel();
+        // struct pollfd { int fd; short events = POLLIN; short revents } as two i32s (little-endian).
+        std::thread::spawn(move || unsafe {
+            tx.send(gettid()).unwrap();
+            let mut p = [fd, 1];
+            poll(&mut p, 1, -1);
+        });
+        let tid = rx.recv().unwrap() as u32;
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let s = super::main_poll_fds(tid);
+        assert!(s.starts_with(&format!("{fd}=socket:[")), "{s}");
     }
 }
