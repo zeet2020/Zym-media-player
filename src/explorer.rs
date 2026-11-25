@@ -321,10 +321,20 @@ impl Player {
             self.explorer.notice = Some((format!("{} {}…", if append { "Adding" } else { "Opening" }, item.title), false));
             let id = item.id.clone();
             let parent = self.explorer.stack.last().and_then(|n| n.from.clone());
+            if !append {
+                // Show "<title> — loading…" over the video right away; the old video stops here.
+                self.opening = Some(item.title.clone());
+                self.mpv.cmd(&["set", "pause", "yes"]);
+                self.explorer.open = false;
+                self.editing = None;
+            }
             let task = cx.background_executor().spawn(async move { src.resolve(&id) });
             cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update(cx, |p, cx| {
+                    if !append {
+                        p.opening = None;
+                    }
                     if let Ok(pb) = &result {
                         let info = pb.info.clone().unwrap_or_else(|| sources::Info::from_item(&item, parent.as_ref()));
                         p.infos.insert(pb.url.clone(), info);
@@ -340,7 +350,10 @@ impl Player {
                             p.explorer.open = false; // collapse so the video is visible
                             p.editing = None;
                         }
-                        Err(e) => p.explorer.notice = Some((format!("Couldn't play {}: {e}", item.title), true)),
+                        Err(e) => {
+                            p.explorer.notice = Some((format!("Couldn't play {}: {e}", item.title), true));
+                            p.explorer.open = true; // show the error where the user picked the item
+                        }
                     }
                     cx.notify();
                 })
@@ -841,8 +854,6 @@ fn group_by_section(settings: &[sources::Setting]) -> Vec<(Option<String>, Vec<&
     groups.retain(|(_, v)| !v.is_empty());
     groups
 }
-
-/// Small themed icon button for list rows (edit / remove).
 
 fn center(child: Div) -> Div {
     div().size_full().flex().items_center().justify_center().child(child)

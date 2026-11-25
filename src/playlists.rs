@@ -185,11 +185,10 @@ impl Player {
         self.close_overlays();
         self.pl.open = true;
         self.pl.names = list_in(&dir());
-        if let Sel::Saved(n) = &self.pl.sel {
-            if !self.pl.names.contains(n) {
+        if let Sel::Saved(n) = &self.pl.sel
+            && !self.pl.names.contains(n) {
                 self.pl.sel = Sel::Queue;
             }
-        }
         self.select(self.pl.sel.clone());
     }
 

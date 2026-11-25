@@ -16,6 +16,9 @@ use std::time::Instant;
 
 use gpui::{Bounds, Hsla, PathBuilder, Pixels, Window, canvas, fill, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, size};
 
+/// Draws a polyline (points, width, colour).
+type LineFn<'a> = dyn Fn(&mut Window, &[(f32, f32)], f32, Hsla) + 'a;
+
 pub const BANDS: usize = 16;
 /// Filter label; also the property name "af-metadata/viz".
 pub const LABEL: &str = "viz";
@@ -498,7 +501,7 @@ impl Snap {
 
     /// Synthwave: striped sun over a neon grid racing at the tempo, with mountains on both sides
     /// built from the last few seconds of the spectrum (low notes by the road, highs outside).
-    fn paint_horizon(&self, w: f32, h: f32, p: &dyn Fn(f32, f32) -> gpui::Point<Pixels>, line: &dyn Fn(&mut Window, &[(f32, f32)], f32, Hsla), window: &mut Window) {
+    fn paint_horizon(&self, w: f32, h: f32, p: &dyn Fn(f32, f32) -> gpui::Point<Pixels>, line: &LineFn<'_>, window: &mut Window) {
         let hy = h * 0.55;
         let (pink, cyan) = (hsla((self.hue + 0.9).fract(), 0.9, 0.6, 1.), hsla((self.hue + 0.5).fract(), 0.9, 0.6, 1.));
         // Sky and floor.
@@ -516,7 +519,7 @@ impl Snap {
         let mut y = sy - r;
         while y < hy.min(sy + r) {
             let below = ((y - sy) / r).max(0.);
-            let gap = if below > 0. && ((y - sy) % 14.) < 2. + below * 8. { true } else { false };
+            let gap = below > 0. && ((y - sy) % 14.) < 2. + below * 8.;
             if !gap {
                 let half = (r * r - (y - sy) * (y - sy)).max(0.).sqrt();
                 let t = ((y - (sy - r)) / (2. * r)).clamp(0., 1.);

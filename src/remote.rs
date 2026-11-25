@@ -2,7 +2,7 @@
 //! Exposed to plugins as the Extism host function `zym_list_dir`, which enforces the calling
 //! plugin's manifest `hosts` before connecting. Playback itself is mpv's own ftp:// / sftp://.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -150,14 +150,14 @@ impl russh::client::Handler for Tofu {
     async fn check_server_key(&mut self, key: &russh::keys::PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
             // ponytail: SSH certificates need a configured CA to trust; refuse until someone needs it.
-            *self.rejection.lock().unwrap() = Some("SFTP server presented an SSH certificate; not supported yet".into());
+            *self.rejection.lock().unwrap_or_else(PoisonError::into_inner) = Some("SFTP server presented an SSH certificate; not supported yet".into());
             return Ok(false);
         };
         let fp = key.fingerprint(russh::keys::HashAlg::Sha256).to_string();
         match tofu_check(&known_hosts_path(), &self.host_port, &fp) {
             Ok(()) => Ok(true),
             Err(e) => {
-                *self.rejection.lock().unwrap() = Some(e);
+                *self.rejection.lock().unwrap_or_else(PoisonError::into_inner) = Some(e);
                 Ok(false)
             }
         }
@@ -192,7 +192,7 @@ fn list_sftp(t: &Target, user: &str, pass: &str) -> Result<Vec<Entry>, String> {
         sftp.close().await.ok();
         Ok(out)
     }).await });
-    if let Some(why) = rejection.lock().unwrap().take() {
+    if let Some(why) = rejection.lock().unwrap_or_else(PoisonError::into_inner).take() {
         return Err(why); // host-key mismatch beats the generic "connect failed"
     }
     result.map_err(|_| format!("SFTP timed out after {}s", TIMEOUT.as_secs()))?
@@ -223,7 +223,7 @@ pub fn host_function(allowed_hosts: Vec<String>) -> extism::Function {
         extism::UserData::new(allowed_hosts),
         |plugin: &mut extism::CurrentPlugin, inputs: &[extism::Val], outputs: &mut [extism::Val], data: extism::UserData<Vec<String>>| {
             let req: String = plugin.memory_get_val(&inputs[0])?;
-            let hosts = data.get()?.lock().unwrap().clone();
+            let hosts = data.get()?.lock().unwrap_or_else(PoisonError::into_inner).clone();
             let resp = handle_request(&req, &hosts).to_string();
             plugin.memory_set_val(&mut outputs[0], resp)?;
             Ok(())

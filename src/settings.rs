@@ -455,7 +455,7 @@ impl Player {
                 }));
                 // Plugins the user installed can be removed (bundled ones only disabled).
                 // Every row keeps the slot so the toggles line up.
-                let remove = div().w(px(76.)).flex().flex_none().justify_end().children(crate::install::user_installed(&id).then(|| {
+                let remove = div().w(px(76.)).flex().flex_none().justify_end().children(crate::install::user_installed(id).then(|| {
                     let id2 = id.clone();
                     if s.confirm_remove.as_deref() == Some(id.as_str()) {
                         crate::panel::confirm_button(SharedString::from(format!("rm-ok-{id}")), "Remove?").on_click(cx.listener(move |this, _, _, _| this.remove_plugin(&id2)))

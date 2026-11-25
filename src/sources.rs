@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -247,11 +247,14 @@ fn header_name_ok(n: &str) -> bool {
 /// Strict playback check (spec §4): network schemes only, safe headers, http(s) subtitles.
 pub fn parse_playback(v: Value) -> Result<Playback, String> {
     let pb: Playback = serde_json::from_value(v).map_err(|e| format!("invalid playback: {e}"))?;
+    if pb.url.contains('\0') || pb.subtitles.iter().any(|s| s.url.contains('\0')) {
+        return Err("refused URL containing a NUL byte".into());
+    }
     if !STREAM_SCHEMES.iter().any(|s| pb.url.to_ascii_lowercase().starts_with(s)) {
         return Err(format!("refused stream URL scheme: {}", pb.url.split(':').next().unwrap_or("")));
     }
     for (k, v) in &pb.headers {
-        if !header_name_ok(k) || v.contains(['\r', '\n']) {
+        if !header_name_ok(k) || v.contains(['\r', '\n', '\0']) {
             return Err(format!("refused invalid header {k:?}"));
         }
     }
@@ -336,7 +339,7 @@ impl Installed {
     pub fn new_connection(self: &Arc<Self>, existing: usize) -> Arc<Source> {
         let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let src = Source::open(self, &format!("c{millis}"));
-        *src.name.lock().unwrap() =
+        *src.name.lock().unwrap_or_else(PoisonError::into_inner) =
             if existing == 0 { self.manifest.name.clone() } else { format!("{} {}", self.manifest.name, existing + 1) };
         Arc::new(src)
     }
@@ -366,7 +369,7 @@ impl Source {
     }
 
     pub fn name(&self) -> String {
-        self.name.lock().unwrap().clone()
+        self.name.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn is_saved(&self) -> bool {
@@ -379,9 +382,9 @@ impl Source {
         let data = ConnFile { name: name.clone(), settings: values.clone() };
         std::fs::create_dir_all(self.file.parent().unwrap()).map_err(|e| format!("saving settings: {e}"))?;
         std::fs::write(&self.file, serde_json::to_string_pretty(&data).unwrap()).map_err(|e| format!("saving settings: {e}"))?;
-        *self.name.lock().unwrap() = name;
-        *self.settings.lock().unwrap() = values;
-        *self.plugin.lock().unwrap() = None; // config is baked into the instance; rebuild on next call
+        *self.name.lock().unwrap_or_else(PoisonError::into_inner) = name;
+        *self.settings.lock().unwrap_or_else(PoisonError::into_inner) = values;
+        *self.plugin.lock().unwrap_or_else(PoisonError::into_inner) = None; // config is baked into the instance; rebuild on next call
         Ok(())
     }
 
@@ -394,7 +397,7 @@ impl Source {
     }
 
     pub fn settings(&self) -> BTreeMap<String, String> {
-        self.settings.lock().unwrap().clone()
+        self.settings.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     pub fn has(&self, cap: &str) -> bool {
@@ -402,7 +405,7 @@ impl Source {
     }
 
     pub fn needs_setup(&self) -> bool {
-        let s = self.settings.lock().unwrap();
+        let s = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
         self.manifest.settings.iter().any(|f| f.required && s.get(&f.key).is_none_or(|v| v.trim().is_empty()))
     }
 
@@ -412,7 +415,7 @@ impl Source {
 
     /// Run one export. Blocking — call from a background thread.
     pub fn call(&self, func: &str, input: &Value) -> Result<Value, String> {
-        let mut slot = self.plugin.lock().unwrap();
+        let mut slot = self.plugin.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.is_none() {
             let mut config: BTreeMap<String, String> = self
                 .manifest
@@ -424,7 +427,8 @@ impl Source {
             let m = extism::Manifest::new([extism::Wasm::file(self.dir.join("plugin.wasm"))])
                 .with_allowed_hosts(self.manifest.hosts.clone().into_iter())
                 .with_config(config.into_iter())
-                .with_timeout(Duration::from_secs(if func == "resolve" { 30 } else { 15 }));
+                .with_timeout(Duration::from_secs(if func == "resolve" { 30 } else { 15 }))
+                .with_memory_max(4096); // 64 KiB pages = 256 MiB; a runaway plugin traps instead of eating RAM
             // Host functions available to every plugin; each enforces this plugin's manifest `hosts`.
             let host_fns = [crate::remote::host_function(self.manifest.hosts.clone())];
             *slot = Some(extism::Plugin::new(&m, host_fns, true).map_err(|e| format!("loading plugin: {e}"))?);
@@ -577,6 +581,9 @@ mod tests {
         let info = pb.info.unwrap();
         assert_eq!((info.poster, info.backdrop.as_deref(), info.details.len()), (None, Some("https://b.jpg"), 1), "file:// art dropped");
         assert!(parse_playback(json!({ "url": "edl://x" })).is_err());
+        assert!(parse_playback(json!({ "url": "https://a\0b" })).is_err());
+        assert!(parse_playback(json!({ "url": "https://a", "subtitles": [{ "url": "https://s\0" }] })).is_err());
+        assert!(parse_playback(json!({ "url": "https://a", "headers": { "X": "a\0" } })).is_err());
         assert!(parse_playback(json!({ "url": "https://a", "headers": { "X": "a\r\nB: c" } })).is_err());
         assert!(parse_playback(json!({ "url": "https://a", "headers": { "Bad Name": "v" } })).is_err());
         assert!(parse_playback(json!({ "url": "https://a", "subtitles": [{ "url": "file:///x.srt" }] })).is_err());
@@ -613,7 +620,7 @@ mod tests {
                 }
                 let req = String::from_utf8_lossy(&data).to_string();
                 let (status, body) = respond(&req);
-                log2.lock().unwrap().push(req);
+                log2.lock().unwrap_or_else(PoisonError::into_inner).push(req);
                 let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             }
         });
@@ -693,7 +700,7 @@ mod tests {
         std::fs::create_dir_all(user.join("org.zym.m3u")).unwrap();
         std::fs::write(user.join("org.zym.m3u/settings.json"), r#"{"playlist_url":"http://old/"}"#).unwrap();
 
-        let p = load_from(&user, &[bundle.clone()]);
+        let p = load_from(&user, std::slice::from_ref(&bundle));
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].manifest.name, "Bundled");
 
@@ -710,17 +717,17 @@ mod tests {
         assert_eq!(c2.name(), "Bundled 2");
         c2.save("Provider B".into(), BTreeMap::from([("playlist_url".into(), "http://b/".into())])).unwrap();
         assert!(!bundle.join("org.zym.m3u/connections").exists(), "never write into the install dir");
-        let conns = load_from(&user, &[bundle.clone()])[0].connections();
+        let conns = load_from(&user, std::slice::from_ref(&bundle))[0].connections();
         assert_eq!(conns.len(), 2);
         assert!(conns.iter().any(|c| c.name() == "Provider B" && c.settings()["playlist_url"] == "http://b/"));
         assert!(conns.iter().any(|c| c.conn_id == "default" && c.settings()["playlist_url"] == "http://old/"));
 
         // Remove one; the other stays.
         conns.iter().find(|c| c.name() == "Provider B").unwrap().remove().unwrap();
-        assert_eq!(load_from(&user, &[bundle.clone()])[0].connections().len(), 1);
+        assert_eq!(load_from(&user, std::slice::from_ref(&bundle))[0].connections().len(), 1);
 
         put(&user.join("org.zym.m3u"), "User copy"); // same id installed by the user wins
-        let p = load_from(&user, &[bundle.clone()]);
+        let p = load_from(&user, std::slice::from_ref(&bundle));
         assert_eq!((p.len(), p[0].manifest.name.as_str()), (1, "User copy"));
         assert_eq!(p[0].connections().len(), 1, "connections are per user id, independent of which copy wins");
         std::fs::remove_dir_all(&tmp).ok();
@@ -773,7 +780,7 @@ mod tests {
         assert_eq!(pb.headers.get("User-Agent").map(String::as_str), Some("Stremio"));
 
         // Manifests are fetched once per instance, not per page.
-        let manifests = log.lock().unwrap().iter().filter(|r| r.contains("manifest.json")).count();
+        let manifests = log.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|r| r.contains("manifest.json")).count();
         assert_eq!(manifests, 2, "manifest requests: {manifests}");
         std::fs::remove_dir_all(&src.dir).ok();
     }
@@ -858,7 +865,7 @@ mod tests {
         assert_eq!(pb.url, format!("http://127.0.0.1:{port}/dav/Shows/Ep%201.mkv"));
         assert_eq!(pb.headers.get("Authorization").map(String::as_str), Some("Basic YWxpY2U6czNjcmV0"));
 
-        let reqs = log.lock().unwrap();
+        let reqs = log.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(reqs.iter().all(|r| r.starts_with("PROPFIND ")), "{reqs:?}");
         assert!(reqs.iter().all(|r| r.to_ascii_lowercase().contains("depth: 1")));
         std::fs::remove_dir_all(&src.dir).ok();

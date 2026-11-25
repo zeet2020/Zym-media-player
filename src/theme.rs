@@ -2,7 +2,7 @@
 //! Panels, menus, popovers and dialogs read colors from `t()`. The video area and the control bar
 //! over it stay dark in both modes (white icons on video need a dark backing); the accent applies everywhere.
 
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 use gpui::{Rgba, WindowAppearance, rgb, rgba};
 use serde::{Deserialize, Serialize};
@@ -123,11 +123,11 @@ static CURRENT: RwLock<Option<Theme>> = RwLock::new(None);
 
 /// Current palette (dark until the first `resolve`).
 pub fn t() -> Theme {
-    CURRENT.read().unwrap().unwrap_or_else(|| Theme::new(true, prefs().accent))
+    CURRENT.read().unwrap_or_else(PoisonError::into_inner).unwrap_or_else(|| Theme::new(true, prefs().accent))
 }
 
 pub fn prefs() -> Prefs {
-    *PREFS.read().unwrap()
+    *PREFS.read().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Re-resolve against the OS appearance (for System mode). Cheap; called every UI tick.
@@ -138,18 +138,18 @@ pub fn resolve(os: WindowAppearance) {
         Mode::Light => false,
         Mode::System => matches!(os, WindowAppearance::Dark | WindowAppearance::VibrantDark),
     };
-    *CURRENT.write().unwrap() = Some(Theme::new(dark, p.accent));
+    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Some(Theme::new(dark, p.accent));
 }
 
 /// Load saved prefs (missing/invalid -> defaults).
 pub fn load() {
     let p = crate::settings::get("appearance").and_then(|a| serde_json::from_value(a).ok()).unwrap_or_default();
-    *PREFS.write().unwrap() = p;
+    *PREFS.write().unwrap_or_else(PoisonError::into_inner) = p;
 }
 
 /// Change + persist.
 pub fn set(p: Prefs) {
-    *PREFS.write().unwrap() = p;
+    *PREFS.write().unwrap_or_else(PoisonError::into_inner) = p;
     crate::settings::put("appearance", serde_json::to_value(p).unwrap());
 }
 
@@ -159,12 +159,12 @@ mod tests {
 
     #[test]
     fn modes_resolve_and_prefs_roundtrip() {
-        *PREFS.write().unwrap() = Prefs { mode: Mode::System, accent: 0x22c55e };
+        *PREFS.write().unwrap_or_else(PoisonError::into_inner) = Prefs { mode: Mode::System, accent: 0x22c55e };
         resolve(WindowAppearance::Light);
         assert!(!t().dark);
         resolve(WindowAppearance::VibrantDark);
         assert!(t().dark);
-        *PREFS.write().unwrap() = Prefs { mode: Mode::Light, accent: 0x22c55e };
+        *PREFS.write().unwrap_or_else(PoisonError::into_inner) = Prefs { mode: Mode::Light, accent: 0x22c55e };
         resolve(WindowAppearance::Dark);
         assert!(!t().dark, "explicit Light ignores the OS");
         assert_eq!(t().accent, 0x22c55e);

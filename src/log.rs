@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 /// Most severe first, so `level <= threshold` filters.
@@ -84,7 +84,7 @@ fn rotate() -> Option<(std::fs::File, u64)> {
 /// Start this run's log file (the previous run's becomes previous.log). Logging works without it.
 pub fn init() {
     start();
-    *FILE.lock().unwrap() = rotate();
+    *FILE.lock().unwrap_or_else(PoisonError::into_inner) = rotate();
     info("app", &format!("{} {} started", crate::APP_NAME, crate::VERSION));
 }
 
@@ -92,17 +92,16 @@ pub fn add(level: Level, source: &str, text: &str) {
     let line = Line { at: start().elapsed().as_secs_f64(), level, source: source.to_string(), text: text.trim_end().to_string() };
     let formatted = line.format();
     eprintln!("{formatted}");
-    let mut file = FILE.lock().unwrap();
+    let mut file = FILE.lock().unwrap_or_else(PoisonError::into_inner);
     if file.as_ref().is_some_and(|(_, n)| *n >= FILE_MAX) {
         *file = rotate();
     }
-    if let Some((f, n)) = file.as_mut() {
-        if writeln!(f, "{formatted}").is_ok() {
+    if let Some((f, n)) = file.as_mut()
+        && writeln!(f, "{formatted}").is_ok() {
             *n += formatted.len() as u64 + 1;
         }
-    }
     drop(file);
-    let mut lines = LINES.lock().unwrap();
+    let mut lines = LINES.lock().unwrap_or_else(PoisonError::into_inner);
     if lines.len() == KEEP {
         lines.pop_front();
     }
@@ -124,16 +123,16 @@ pub fn debug(source: &str, text: &str) {
 
 /// Newest first, at or above `threshold` (Error < Warn < …), at most `max`.
 pub fn recent(threshold: Level, max: usize) -> Vec<Line> {
-    LINES.lock().unwrap().iter().rev().filter(|l| l.level <= threshold).take(max).cloned().collect()
+    LINES.lock().unwrap_or_else(PoisonError::into_inner).iter().rev().filter(|l| l.level <= threshold).take(max).cloned().collect()
 }
 
 /// Oldest first, as text (Copy).
 pub fn text(threshold: Level) -> String {
-    LINES.lock().unwrap().iter().filter(|l| l.level <= threshold).map(Line::format).collect::<Vec<_>>().join("\n")
+    LINES.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|l| l.level <= threshold).map(Line::format).collect::<Vec<_>>().join("\n")
 }
 
 pub fn clear() {
-    LINES.lock().unwrap().clear();
+    LINES.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
 #[cfg(test)]
@@ -156,6 +155,6 @@ mod tests {
         for i in 0..KEEP + 5 {
             add(Level::Debug, "t", &i.to_string());
         }
-        assert_eq!(LINES.lock().unwrap().len(), KEEP, "bounded");
+        assert_eq!(LINES.lock().unwrap_or_else(PoisonError::into_inner).len(), KEEP, "bounded");
     }
 }

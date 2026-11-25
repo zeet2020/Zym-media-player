@@ -9,6 +9,9 @@ use crate::Player;
 use crate::menu::{Item, ui};
 use crate::theme::t;
 
+/// Per text box (by field): text start x, font and size from the last paint.
+pub type TextGeo = std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, (gpui::Pixels, gpui::Font, gpui::Pixels)>>>;
+
 /// Which text box has keyboard focus. Each variant's text lives with the panel that owns it
 /// (`field_text` dispatches); adding a field = a variant + its owner's two match arms.
 #[derive(Clone, PartialEq, Debug)]
@@ -291,12 +294,11 @@ impl Player {
                             return;
                         }
                         this2.update(cx, |p, cx| {
-                            if let Some(at) = p.index_at(&field2, secret, e.position.x, window) {
-                                if let Some(c) = p.caret.as_mut().filter(|c| c.field == field2) {
+                            if let Some(at) = p.index_at(&field2, secret, e.position.x, window)
+                                && let Some(c) = p.caret.as_mut().filter(|c| c.field == field2) {
                                     c.pos = at;
                                     cx.notify();
                                 }
-                            }
                         })
                         .ok();
                     });
