@@ -531,7 +531,7 @@ type VideoSize = Arc<AtomicU64>;
 /// Drains mpv's event queue (a full queue makes async commands fail silently), tracks video size,
 /// and passes mpv's log messages to the app log (log.rs).
 #[allow(non_upper_case_globals)] // bindgen constants used as match patterns
-fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake) {
+fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake) -> std::thread::JoinHandle<()> {
     unsafe {
         let level = if std::env::var_os("ZYM_DEBUG").is_some() { c"v" } else { c"warn" };
         mpv_request_log_messages(mpv.0, level.as_ptr());
@@ -597,7 +597,7 @@ fn spawn_event_thread(mpv: Arc<Mpv>, size: VideoSize, wake_render: &'static Wake
                 _ => {}
             }
         }
-    });
+    })
 }
 
 fn spawn_render_thread(mpv: Arc<Mpv>, latest: Latest, size: VideoSize, wake_me: &'static Wake) {
@@ -809,7 +809,7 @@ impl Player {
         let latest: Latest = Arc::default();
         let size: VideoSize = Arc::default();
         let wake_render: &'static Wake = Box::leak(Box::new((Mutex::new(false), Condvar::new())));
-        spawn_event_thread(mpv.clone(), size.clone(), wake_render);
+        let mut events = Some(spawn_event_thread(mpv.clone(), size.clone(), wake_render));
         spawn_render_thread(mpv.clone(), latest.clone(), size, wake_render);
         // Only after the render context exists: loading earlier races vo/libmpv ("No render context set").
         for f in &files {
@@ -817,8 +817,18 @@ impl Player {
         }
 
         // ponytail: 60Hz poll; swap for a channel + cx.notify from the render thread if it matters.
-        cx.on_app_quit(|this, _| {
+        cx.on_app_quit(move |this, _| {
             this.save_position();
+            // Stop mpv before the process exits: its decoder threads keep running otherwise, and libc's
+            // exit handlers (NVDEC/CUDA teardown) pull the GPU out from under them -> segfault on quit.
+            // The core uninits playback before MPV_EVENT_SHUTDOWN, which ends the event thread.
+            this.mpv.cmd(&["quit"]);
+            if let Some(h) = events.take() {
+                let until = Instant::now() + Duration::from_secs(2);
+                while !h.is_finished() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             async {}
         })
         .detach();
@@ -2202,9 +2212,38 @@ impl AssetSource for Assets {
     }
 }
 
+/// GPUI picks Wayland whenever WAYLAND_DISPLAY is set and panics (NoCompositor) if nothing answers.
+/// A stale value is common in X11 sessions (leaked into the systemd user env by an earlier Wayland
+/// login), so probe the socket and fall back to X11 like Qt/GTK do.
+#[cfg(target_os = "linux")]
+fn drop_dead_wayland_display() {
+    let Some(name) = std::env::var_os("WAYLAND_DISPLAY").filter(|v| !v.is_empty()) else { return };
+    if std::env::var_os("DISPLAY").is_none_or(|v| v.is_empty()) {
+        return; // no X11 to fall back to; let GPUI report it
+    }
+    let path = std::path::PathBuf::from(&name);
+    let path = if path.is_absolute() { path } else { std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default()).join(path) };
+    if std::os::unix::net::UnixStream::connect(&path).is_err() {
+        // SAFETY: first thing in main, before any other thread exists.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    drop_dead_wayland_display();
     let files: Vec<String> = std::env::args().skip(1).collect();
     log::init();
+    // Panics otherwise only reach stderr. Append straight to the file, not via log::add: a panic
+    // while the log mutex is held would deadlock here instead of crashing.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(log::file_path()) {
+            use std::io::Write;
+            let _ = writeln!(f, "PANIC: {info}\n{}", std::backtrace::Backtrace::force_capture());
+        }
+        default_hook(info);
+    }));
     theme::load();
     match files.first().map(String::as_str) {
         Some("-V" | "--version") => return println!("{APP_NAME} {VERSION}"),
